@@ -204,6 +204,8 @@ cython_debug/
 # OmniChainBench eval artifacts
 artifacts/
 prepared_data/
+data
+data/
 
 # Marimo
 marimo/_static/
