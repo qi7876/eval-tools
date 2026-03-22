@@ -1,0 +1,57 @@
+{
+  "sport": "TestSport",
+  "event": "TestEvent",
+  "video_id": "1",
+  "info": "1.mp4",
+  "video_metadata": {
+    "duration_sec": 50.0,
+    "fps": 10,
+    "total_frames": 500,
+    "resolution": [1920, 1080]
+  },
+  "annotations": [
+    {
+      "annotation_id": "1",
+      "task_L1": "Understanding",
+      "task_L2": "Scoreboard_Single",
+      "timestamp_frame": 10,
+      "question": "What score is shown on the scoreboard?",
+      "answer": "The scoreboard shows a 1-0 lead.",
+      "bounding_box": [10, 20, 200, 80]
+    },
+    {
+      "annotation_id": "2",
+      "task_L1": "Understanding",
+      "task_L2": "Continuous_Actions_Caption",
+      "Q_window_frame": [100, 150],
+      "question": "Describe the athlete actions.",
+      "A_window_frame": ["100-120", "121-150"],
+      "answer": ["The athlete starts running.", "The athlete jumps and lands."],
+      "tracking_bboxes": "./dataset/TestSport/TestEvent/mot/1_2_Continuous_Actions_Caption.txt"
+    },
+    {
+      "annotation_id": "3",
+      "task_L1": "Understanding",
+      "task_L2": "Spatial_Temporal_Grounding",
+      "query": "The athlete performs a jump.",
+      "A_window_frame": [200, 220],
+      "tracking_bboxes": "./dataset/TestSport/TestEvent/mot/1_3_Spatial_Temporal_Grounding.txt"
+    },
+    {
+      "annotation_id": "4",
+      "task_L1": "Understanding",
+      "task_L2": "Spatial_Imagination",
+      "upstream_annotation_id": "2",
+      "Q_window_frame": [100, 150],
+      "question": "Describe the trajectory from the camera view.",
+      "answer": "The athlete moves from left to right before rising slightly during the jump."
+    },
+    {
+      "annotation_id": "5",
+      "task_L1": "Special",
+      "task_L2": "Commentary",
+      "Q_window_frame": [300, 360],
+      "commentary": "./data/TestSport/TestEvent/commentary_5.json"
+    }
+  ]
+}

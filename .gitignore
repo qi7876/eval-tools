@@ -201,6 +201,10 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# OmniChainBench eval artifacts
+artifacts/
+prepared_data/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/
