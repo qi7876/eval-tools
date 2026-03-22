@@ -1,0 +1,23 @@
+[validate_data]
+data_root = "../../data"
+
+[build_chain_manifest]
+data_root = "../../data"
+out = "../../artifacts/chain_pairs.jsonl"
+
+[prepare_data]
+data_root = "../../data"
+prepared_root = "../../prepared_data"
+protocols = [
+  "main",
+  "expd_window_16s_2fps",
+  "expd_window_32s_2fps",
+  "expd_window_64s_2fps",
+  "expd_fps_32s_1fps",
+  "expd_fps_32s_2fps",
+  "expd_fps_32s_4fps",
+]
+
+[report]
+artifacts_root = "../../artifacts/runs"
+out = "../../artifacts/report.json"

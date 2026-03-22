@@ -1,0 +1,212 @@
+"""TOML-backed command configuration."""
+
+from __future__ import annotations
+
+import os
+import tomllib
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
+from .constants import JUDGE_MODEL_DEFAULT
+
+
+def _load_toml(path: Path) -> tuple[dict[str, Any], Path]:
+    payload = tomllib.loads(path.read_text(encoding="utf-8"))
+    return payload, path.parent
+
+
+def _table(payload: dict[str, Any], name: str) -> dict[str, Any]:
+    raw = payload.get(name, {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"TOML section [{name}] must be a table")
+    return raw
+
+
+def _resolve_path(base_dir: Path, raw: str | None, *, default: str | None = None) -> Path | None:
+    value = raw if raw is not None else default
+    if value is None:
+        return None
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    return (base_dir / path).resolve()
+
+
+def _resolve_path_list(base_dir: Path, raw: list[str] | None, *, default: list[str] | None = None) -> list[Path]:
+    values = raw if raw is not None else default or []
+    return [_resolve_path(base_dir, value) for value in values if value is not None]  # type: ignore[list-item]
+
+
+@dataclass(slots=True)
+class ValidateDataConfig:
+    data_root: Path = Path("data")
+
+
+@dataclass(slots=True)
+class BuildChainManifestConfig:
+    data_root: Path = Path("data")
+    out: Path = Path("artifacts/chain_pairs.jsonl")
+
+
+@dataclass(slots=True)
+class PrepareDataConfig:
+    data_root: Path = Path("data")
+    prepared_root: Path = Path("prepared_data")
+    protocols: list[str] = field(default_factory=lambda: ["main"])
+
+
+@dataclass(slots=True)
+class JudgeConfig:
+    backend: str = "openai"
+    base_url: str | None = None
+    api_key: str | None = None
+    api_key_env: str = "EVAL_JUDGE_API_KEY"
+    model: str = JUDGE_MODEL_DEFAULT
+    temperature: float = 0.0
+    top_p: float = 1.0
+    top_k: int = 1
+    max_tokens: int = 256
+    n: int = 1
+    seed: int = 42
+    invalid_json_retries: int = 0
+
+    def resolved_base_url(self) -> str | None:
+        if self.base_url:
+            return self.base_url
+        return os.environ.get("EVAL_JUDGE_BASE_URL")
+
+    def resolved_api_key(self) -> str | None:
+        if self.api_key:
+            return self.api_key
+        return os.environ.get(self.api_key_env)
+
+
+@dataclass(slots=True)
+class RunEvalConfig:
+    prepared_root: Path = Path("prepared_data")
+    protocol: str = "main"
+    artifacts_root: Path = Path("artifacts/runs")
+    run_name: str | None = None
+    model_name: str | None = None
+    chain_manifest: Path | None = None
+    enable_oracle_track: bool = False
+    enable_bertscore: bool = False
+    commentary_unsupported: bool = False
+    adapter: str | None = None
+    predictions: Path | None = None
+    oracle_predictions: Path | None = None
+    judge: JudgeConfig = field(default_factory=JudgeConfig)
+
+
+@dataclass(slots=True)
+class ReportConfig:
+    artifacts_root: Path = Path("artifacts/runs")
+    out: Path | None = None
+
+
+def load_validate_data_config(path: Path) -> ValidateDataConfig:
+    payload, base_dir = _load_toml(path)
+    table = _table(payload, "validate_data")
+    return ValidateDataConfig(
+        data_root=_resolve_path(base_dir, table.get("data_root"), default="data"),  # type: ignore[arg-type]
+    )
+
+
+def load_build_chain_manifest_config(path: Path) -> BuildChainManifestConfig:
+    payload, base_dir = _load_toml(path)
+    table = _table(payload, "build_chain_manifest")
+    return BuildChainManifestConfig(
+        data_root=_resolve_path(base_dir, table.get("data_root"), default="data"),  # type: ignore[arg-type]
+        out=_resolve_path(
+            base_dir,
+            table.get("out"),
+            default="artifacts/chain_pairs.jsonl",
+        ),  # type: ignore[arg-type]
+    )
+
+
+def load_prepare_data_config(path: Path) -> PrepareDataConfig:
+    payload, base_dir = _load_toml(path)
+    table = _table(payload, "prepare_data")
+    protocols = table.get("protocols", ["main"])
+    if not isinstance(protocols, list) or not all(isinstance(value, str) for value in protocols):
+        raise ValueError("[prepare_data].protocols must be a list of strings")
+    return PrepareDataConfig(
+        data_root=_resolve_path(base_dir, table.get("data_root"), default="data"),  # type: ignore[arg-type]
+        prepared_root=_resolve_path(
+            base_dir,
+            table.get("prepared_root"),
+            default="prepared_data",
+        ),  # type: ignore[arg-type]
+        protocols=list(protocols),
+    )
+
+
+def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
+    table = _table(payload, "judge")
+    config = JudgeConfig(
+        backend=str(table.get("backend", "openai")),
+        base_url=table.get("base_url"),
+        api_key=table.get("api_key"),
+        api_key_env=str(table.get("api_key_env", "EVAL_JUDGE_API_KEY")),
+        model=str(table.get("model", JUDGE_MODEL_DEFAULT)),
+        temperature=float(table.get("temperature", 0.0)),
+        top_p=float(table.get("top_p", 1.0)),
+        top_k=int(table.get("top_k", 1)),
+        max_tokens=int(table.get("max_tokens", 256)),
+        n=int(table.get("n", 1)),
+        seed=int(table.get("seed", 42)),
+        invalid_json_retries=int(table.get("invalid_json_retries", 0)),
+    )
+    if config.backend not in {"openai", "static-pass", "static-fail"}:
+        raise ValueError("[judge].backend must be one of: openai, static-pass, static-fail")
+    if config.invalid_json_retries < 0:
+        raise ValueError("[judge].invalid_json_retries must be >= 0")
+    return config
+
+
+def load_run_eval_config(path: Path) -> RunEvalConfig:
+    payload, base_dir = _load_toml(path)
+    table = _table(payload, "run_eval")
+    config = RunEvalConfig(
+        prepared_root=_resolve_path(
+            base_dir,
+            table.get("prepared_root"),
+            default="prepared_data",
+        ),  # type: ignore[arg-type]
+        protocol=str(table.get("protocol", "main")),
+        artifacts_root=_resolve_path(
+            base_dir,
+            table.get("artifacts_root"),
+            default="artifacts/runs",
+        ),  # type: ignore[arg-type]
+        run_name=table.get("run_name"),
+        model_name=table.get("model_name"),
+        chain_manifest=_resolve_path(base_dir, table.get("chain_manifest")),
+        enable_oracle_track=bool(table.get("enable_oracle_track", False)),
+        enable_bertscore=bool(table.get("enable_bertscore", False)),
+        commentary_unsupported=bool(table.get("commentary_unsupported", False)),
+        adapter=table.get("adapter"),
+        predictions=_resolve_path(base_dir, table.get("predictions")),
+        oracle_predictions=_resolve_path(base_dir, table.get("oracle_predictions")),
+        judge=_load_judge_config(base_dir, payload),
+    )
+    if bool(config.adapter) == bool(config.predictions):
+        raise ValueError("[run_eval] must set exactly one of adapter or predictions")
+    return config
+
+
+def load_report_config(path: Path) -> ReportConfig:
+    payload, base_dir = _load_toml(path)
+    table = _table(payload, "report")
+    return ReportConfig(
+        artifacts_root=_resolve_path(
+            base_dir,
+            table.get("artifacts_root"),
+            default="artifacts/runs",
+        ),  # type: ignore[arg-type]
+        out=_resolve_path(base_dir, table.get("out")),
+    )

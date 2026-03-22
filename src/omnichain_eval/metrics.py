@@ -410,7 +410,7 @@ def evaluate_sample(
         component_metrics=metrics,
         component_pass=component_pass,
         task_pass=task_pass,
-        judge_decision=judge_decision.to_dict() if judge_decision else None,
+        judge_decision=judge_decision.to_dict() if isinstance(judge_decision, JudgeDecision) else judge_decision,
         raw_output=raw_output,
         bertscore_candidate=prediction_text,
         bertscore_reference=reference_text,
@@ -426,9 +426,19 @@ def summarize_task_records(
     protocol_id: str,
     task_name: str,
     records: list[EvaluationRecord],
+    *,
+    total_num_samples: int,
 ) -> TaskSummary:
     if not records:
-        return TaskSummary(model_name, task_name, protocol_id, 0, None)
+        return TaskSummary(
+            model_name=model_name,
+            task_name=task_name,
+            protocol_id=protocol_id,
+            num_samples=total_num_samples,
+            task_accuracy=None,
+            num_scored_samples=0,
+            num_pending_samples=total_num_samples,
+        )
     judge_passes = [
         float(record.component_pass["judge_pass"])
         for record in records
@@ -464,8 +474,15 @@ def summarize_task_records(
         model_name=model_name,
         task_name=task_name,
         protocol_id=protocol_id,
-        num_samples=len(records),
-        task_accuracy=sum(record.task_pass for record in records) / len(records),
+        num_samples=total_num_samples,
+        task_accuracy=(
+            sum(record.task_pass for record in records)
+            / len(records)
+            if records
+            else None
+        ),
+        num_scored_samples=len(records),
+        num_pending_samples=max(total_num_samples - len(records), 0),
         judge_pass_rate=_mean_or_none(judge_passes),
         bbox_pass_rate=_mean_or_none(bbox_passes),
         tiou_pass_rate=_mean_or_none(tiou_passes),

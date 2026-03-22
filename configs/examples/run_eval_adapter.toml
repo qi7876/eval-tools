@@ -1,0 +1,15 @@
+[run_eval]
+prepared_root = "../../prepared_data"
+protocol = "main"
+artifacts_root = "../../artifacts/runs"
+run_name = "mock-main-demo"
+model_name = "mock"
+adapter = "mock"
+chain_manifest = "../../artifacts/chain_pairs.jsonl"
+enable_oracle_track = false
+enable_bertscore = false
+commentary_unsupported = false
+
+[judge]
+backend = "static-pass"
+invalid_json_retries = 1

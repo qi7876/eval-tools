@@ -160,6 +160,25 @@ class EvaluationRecord:
     def to_dict(self) -> dict[str, Any]:
         return to_jsonable(self)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "EvaluationRecord":
+        return cls(
+            sample_id=payload["sample_id"],
+            task_name=payload["task_name"],
+            video_key=payload["video_key"],
+            protocol_id=payload["protocol_id"],
+            normalized_prediction=payload.get("normalized_prediction"),
+            normalization_errors=list(payload.get("normalization_errors", [])),
+            normalization_warnings=list(payload.get("normalization_warnings", [])),
+            component_metrics=dict(payload.get("component_metrics", {})),
+            component_pass=dict(payload.get("component_pass", {})),
+            task_pass=int(payload["task_pass"]),
+            judge_decision=payload.get("judge_decision"),
+            raw_output=payload.get("raw_output"),
+            bertscore_candidate=payload.get("bertscore_candidate"),
+            bertscore_reference=payload.get("bertscore_reference"),
+        )
+
 
 @dataclass(slots=True)
 class TaskSummary:
@@ -168,6 +187,8 @@ class TaskSummary:
     protocol_id: str
     num_samples: int
     task_accuracy: float | None
+    num_scored_samples: int = 0
+    num_pending_samples: int = 0
     judge_pass_rate: float | None = None
     bbox_pass_rate: float | None = None
     tiou_pass_rate: float | None = None

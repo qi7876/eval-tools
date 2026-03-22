@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
@@ -26,7 +25,7 @@ from .constants import (
     TASK_TEMPORAL_CAUSAL,
 )
 from .schema import JudgeDecision
-from .utils import ensure_directory, extract_json_object, stable_hash, write_json
+from .utils import extract_json_object
 
 
 class JudgeClient(ABC):
@@ -41,6 +40,24 @@ class JudgeClient(ABC):
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
         raise NotImplementedError
+
+
+class JudgeResponseFormatError(ValueError):
+    """Raised when the judge response format is not usable."""
+
+    def __init__(self, reason: str, raw_response: str | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.raw_response = raw_response
+
+
+class JudgeResponseFormatExhaustedError(RuntimeError):
+    """Raised when the judge response remains unusable after retries."""
+
+    def __init__(self, reason: str, raw_response: str | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.raw_response = raw_response
 
 
 class StaticJudgeClient(JudgeClient):
@@ -135,7 +152,7 @@ def _build_user_prompt(
 
 
 class OpenAIJudgeClient(JudgeClient):
-    """OpenAI-compatible JSON judge client with on-disk caching."""
+    """OpenAI-compatible JSON judge client."""
 
     def __init__(
         self,
@@ -143,14 +160,36 @@ class OpenAIJudgeClient(JudgeClient):
         base_url: str,
         api_key: str,
         model: str = JUDGE_MODEL_DEFAULT,
-        cache_dir: Path | None = None,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 1,
+        max_tokens: int = 256,
+        n: int = 1,
+        seed: int = 42,
+        invalid_json_retries: int = 0,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
-        self.cache_dir = ensure_directory(cache_dir) if cache_dir else None
+        self.temperature = temperature
+        self.top_p = top_p
+        self.top_k = top_k
+        self.max_tokens = max_tokens
+        self.n = n
+        self.seed = seed
+        self.invalid_json_retries = invalid_json_retries
 
     @classmethod
-    def from_env(cls, *, cache_dir: Path | None = None) -> "OpenAIJudgeClient":
+    def from_env(
+        cls,
+        *,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+        top_k: int = 1,
+        max_tokens: int = 256,
+        n: int = 1,
+        seed: int = 42,
+        invalid_json_retries: int = 0,
+    ) -> "OpenAIJudgeClient":
         base_url = os.environ.get("EVAL_JUDGE_BASE_URL")
         api_key = os.environ.get("EVAL_JUDGE_API_KEY")
         model = os.environ.get("EVAL_JUDGE_MODEL", JUDGE_MODEL_DEFAULT)
@@ -158,33 +197,84 @@ class OpenAIJudgeClient(JudgeClient):
             raise ValueError(
                 "judge configuration is missing; set EVAL_JUDGE_BASE_URL and EVAL_JUDGE_API_KEY"
             )
-        return cls(base_url=base_url, api_key=api_key, model=model, cache_dir=cache_dir)
+        return cls(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
+            max_tokens=max_tokens,
+            n=n,
+            seed=seed,
+            invalid_json_retries=invalid_json_retries,
+        )
 
-    def _cache_path(self, request_payload: dict[str, Any]) -> Path | None:
-        if self.cache_dir is None:
-            return None
-        return self.cache_dir / f"{stable_hash(request_payload)}.json"
-
-    def _parse_decision(self, raw_response: str) -> JudgeDecision:
+    def _extract_payload(self, raw_response: str) -> dict[str, Any]:
         try:
             payload = extract_json_object(raw_response)
-        except ValueError:
-            return default_judge_fail("judge response was not valid JSON", raw_response)
-        if not isinstance(payload, dict) or not JUDGE_JSON_KEYS.issubset(payload.keys()):
-            return default_judge_fail("judge response did not match schema", raw_response)
+        except ValueError as exc:
+            raise JudgeResponseFormatError("judge response was not valid JSON", raw_response) from exc
+        if not isinstance(payload, dict):
+            raise JudgeResponseFormatError("judge response was not a JSON object", raw_response)
+        return payload
+
+    def _parse_decision_from_payload(
+        self,
+        raw_response: str,
+        payload: dict[str, Any],
+    ) -> JudgeDecision:
+        if not JUDGE_JSON_KEYS.issubset(payload.keys()):
+            raise JudgeResponseFormatError("judge response did not match schema", raw_response)
         try:
-            decision = JudgeDecision(
-                correctness=int(payload["correctness"]),
-                completeness=int(payload["completeness"]),
-                faithfulness=int(payload["faithfulness"]),
-                final_pass=int(payload["final_pass"]),
-                confidence=str(payload["confidence"]),
-                brief_reason=str(payload["brief_reason"]),
-                raw_response=raw_response,
+            correctness = int(payload["correctness"])
+            completeness = int(payload["completeness"])
+            faithfulness = int(payload["faithfulness"])
+            final_pass = int(payload["final_pass"])
+            confidence = str(payload["confidence"]).strip()
+            brief_reason = str(payload["brief_reason"]).strip()
+        except Exception as exc:  # noqa: BLE001
+            raise JudgeResponseFormatError(
+                "judge response could not be coerced to schema",
+                raw_response,
+            ) from exc
+        if {correctness, completeness, faithfulness, final_pass} - {0, 1}:
+            raise JudgeResponseFormatError(
+                "judge response contained non-binary scoring fields",
+                raw_response,
             )
-        except Exception:  # noqa: BLE001
-            return default_judge_fail("judge response could not be coerced to schema", raw_response)
-        return decision
+        if not confidence:
+            raise JudgeResponseFormatError("judge response confidence was empty", raw_response)
+        if not brief_reason:
+            raise JudgeResponseFormatError("judge response brief_reason was empty", raw_response)
+        return JudgeDecision(
+            correctness=correctness,
+            completeness=completeness,
+            faithfulness=faithfulness,
+            final_pass=final_pass,
+            confidence=confidence,
+            brief_reason=brief_reason,
+            raw_response=raw_response,
+        )
+
+    def _parse_decision(self, raw_response: str) -> JudgeDecision:
+        payload = self._extract_payload(raw_response)
+        return self._parse_decision_from_payload(raw_response, payload)
+
+    def _response_texts(self, completion: Any) -> list[str]:
+        responses: list[str] = []
+        for choice in getattr(completion, "choices", []):
+            message = choice.message.content
+            if isinstance(message, list):
+                responses.append(
+                    "".join(
+                        item.get("text", "") if isinstance(item, dict) else str(item)
+                        for item in message
+                    )
+                )
+            else:
+                responses.append(message or "")
+        return responses or [""]
 
     def judge(
         self,
@@ -193,46 +283,42 @@ class OpenAIJudgeClient(JudgeClient):
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
-        request_payload = {
-            "model": self.model,
-            "task_name": task_name,
-            "prompt_text": prompt_text,
-            "reference_payload": reference_payload,
-            "prediction_payload": prediction_payload,
-        }
-        cache_path = self._cache_path(request_payload)
-        if cache_path and cache_path.exists():
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            return self._parse_decision(cached["raw_response"])
-
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                {
-                    "role": "user",
-                    "content": _build_user_prompt(
-                        task_name,
-                        prompt_text,
-                        reference_payload,
-                        prediction_payload,
-                    ),
-                },
-            ],
-            temperature=0,
-            top_p=1.0,
-            max_tokens=256,
-            n=1,
-            seed=42,
-            extra_body={"top_k": 1},
-        )
-        message = completion.choices[0].message.content
-        if isinstance(message, list):
-            raw_response = "".join(
-                item.get("text", "") if isinstance(item, dict) else str(item) for item in message
+        max_attempts = self.invalid_json_retries + 1
+        last_raw_response: str | None = None
+        last_error_reason = "judge response format was invalid"
+        for attempt_index in range(max_attempts):
+            completion = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": _build_user_prompt(
+                            task_name,
+                            prompt_text,
+                            reference_payload,
+                            prediction_payload,
+                        ),
+                    },
+                ],
+                temperature=self.temperature,
+                top_p=self.top_p,
+                max_tokens=self.max_tokens,
+                n=self.n,
+                seed=self.seed,
+                extra_body={"top_k": self.top_k},
             )
-        else:
-            raw_response = message or ""
-        if cache_path:
-            write_json(cache_path, {"request": request_payload, "raw_response": raw_response})
-        return self._parse_decision(raw_response)
+            for raw_response in self._response_texts(completion):
+                last_raw_response = raw_response
+                try:
+                    decision = self._parse_decision(raw_response)
+                except JudgeResponseFormatError as exc:
+                    last_error_reason = exc.reason
+                    continue
+                return decision
+            if attempt_index + 1 >= max_attempts:
+                raise JudgeResponseFormatExhaustedError(
+                    f"{last_error_reason} after {max_attempts} attempt(s)",
+                    last_raw_response,
+                )
+        raise JudgeResponseFormatExhaustedError(last_error_reason, last_raw_response)

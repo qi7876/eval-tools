@@ -1,5 +1,10 @@
 # OmniChainBench Evaluation Framework
 
+Language:
+
+- English: `README.md`
+- 中文: [README.zh-CN.md](/home/qi7876/dev/eval-tools/README.zh-CN.md)
+
 This repository provides the evaluation framework for OmniChainBench. It has two goals:
 
 1. Convert the raw benchmark dataset into reusable prepared test data.
@@ -31,6 +36,7 @@ Key files:
 - [pyproject.toml](/home/qi7876/dev/eval-tools/pyproject.toml): package metadata and dependencies
 - [EXPERIMENT_EVALUATION_SPEC.md](/home/qi7876/dev/eval-tools/EXPERIMENT_EVALUATION_SPEC.md): benchmark specification
 - [src/omnichain_eval/cli.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/cli.py): CLI entrypoint
+- [src/omnichain_eval/config.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/config.py): TOML config loading
 - [src/omnichain_eval/dataset.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/dataset.py): raw data loading and validation
 - [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py): sampling rules
 - [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py): prepared-data cache builder
@@ -39,11 +45,12 @@ Key files:
 - [src/omnichain_eval/judge.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/judge.py): judge backend
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py): experiment orchestration
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py): adapter interface
+- `configs/examples/`: example TOML configs for common workflows
 
 Generated directories:
 
 - `prepared_data/`: prepared sample bundles
-- `artifacts/`: predictions, per-sample results, summaries, reports, judge cache
+- `artifacts/`: predictions, per-sample results, summaries, and reports
 
 ## Installation
 
@@ -100,7 +107,7 @@ Example:
 The package installs a single CLI:
 
 ```bash
-uv run omnichain-eval <command> ...
+uv run omnichain-eval <command> --config <path/to/config.toml>
 ```
 
 Available commands:
@@ -111,12 +118,70 @@ Available commands:
 - `run-eval`
 - `report`
 
+All operational parameters are now managed through TOML files. Each command reads only the section it needs from the TOML file you pass in.
+
+## Configuration Files
+
+The framework is configuration-first.
+
+That means:
+
+- raw data paths live in TOML
+- prepared-data paths live in TOML
+- protocol ids live in TOML
+- model adapter or offline prediction paths live in TOML
+- judge backend and sampling parameters live in TOML
+
+This makes it practical to maintain one config per experiment, per protocol, or per model.
+
+Example config files shipped with the repository:
+
+- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate, chain-manifest, prepare-data, report
+- [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml): live adapter evaluation
+- [configs/examples/run_eval_predictions.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_predictions.toml): offline prediction replay
+- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml): a separate Experiment D run config
+
+Supported top-level sections:
+
+- `[validate_data]`
+- `[build_chain_manifest]`
+- `[prepare_data]`
+- `[run_eval]`
+- `[judge]`
+- `[report]`
+
+Minimal example:
+
+```toml
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+artifacts_root = "artifacts/runs"
+adapter = "your_package.adapters.video:YourVideoAdapter"
+chain_manifest = "artifacts/chain_pairs.jsonl"
+
+[judge]
+backend = "openai"
+base_url = "http://your-judge-endpoint/v1"
+api_key_env = "EVAL_JUDGE_API_KEY"
+model = "gpt-4.1-mini"
+invalid_json_retries = 2
+```
+
+Path rules:
+
+- relative paths are resolved relative to the TOML file location
+- different experiments should use different TOML files
+- secrets can stay out of TOML by setting `[judge].api_key_env`
+
 ## Typical End-To-End Workflow
 
 ### 1. Validate the raw dataset
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval validate-data --data-root data
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
+  validate-data \
+  --config configs/examples/workflow.toml
 ```
 
 What it does:
@@ -142,8 +207,7 @@ Important:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   build-chain-manifest \
-  --data-root data \
-  --out artifacts/chain_pairs.jsonl
+  --config configs/examples/workflow.toml
 ```
 
 What it does:
@@ -172,25 +236,18 @@ Main protocol only:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   prepare-data \
-  --data-root data \
-  --prepared-root prepared_data \
-  --protocol main
+  --config configs/examples/workflow.toml
 ```
 
-Main protocol plus all Experiment D fixed-budget ablations:
+The example config already includes `main` plus all current Experiment D fixed-budget ablations inside `[prepare_data].protocols`.
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  prepare-data \
-  --data-root data \
-  --prepared-root prepared_data \
-  --protocol main \
-  --protocol expd_window_16s_2fps \
-  --protocol expd_window_32s_2fps \
-  --protocol expd_window_64s_2fps \
-  --protocol expd_fps_32s_1fps \
-  --protocol expd_fps_32s_2fps \
-  --protocol expd_fps_32s_4fps
+If you want a dedicated config just for one protocol, create a separate TOML file and keep only the protocol ids you need:
+
+```toml
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["main"]
 ```
 
 What it does:
@@ -216,8 +273,7 @@ Both modes use the same normalization, metrics, judge, and reporting logic after
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   report \
-  --artifacts-root artifacts/runs \
-  --out artifacts/report.json
+  --config configs/examples/workflow.toml
 ```
 
 This scans all run directories under `artifacts/runs` and writes a consolidated `report.json`.
@@ -242,7 +298,7 @@ Notes:
 
 ## Prepared Data Directory Layout
 
-After running `prepare-data --protocol main`, the layout looks like:
+After running `prepare-data` with a config whose `[prepare_data].protocols` includes `main`, the layout looks like:
 
 ```text
 prepared_data/
@@ -312,28 +368,21 @@ Protocol-level metadata:
 
 ### Adapter Resolution
 
-`run-eval --adapter ...` accepts either:
+`[run_eval].adapter` accepts either:
 
 - `mock`
 - `module.path:ClassName`
 
 Examples:
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter mock \
-  --judge-backend static-pass
+```toml
+[run_eval]
+adapter = "mock"
 ```
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter my_project.adapters.qwen:QwenVideoAdapter
+```toml
+[run_eval]
+adapter = "my_project.adapters.qwen:QwenVideoAdapter"
 ```
 
 The adapter class must be importable in the current Python environment.
@@ -505,10 +554,24 @@ Run it like this:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter my_package.my_adapter:MyVideoAdapter \
-  --judge-backend openai
+  --config path/to/run_eval_my_model.toml
+```
+
+The TOML should contain at least:
+
+```toml
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+artifacts_root = "artifacts/runs"
+adapter = "my_package.my_adapter:MyVideoAdapter"
+
+[judge]
+backend = "openai"
+base_url = "http://your-judge-endpoint/v1"
+api_key_env = "EVAL_JUDGE_API_KEY"
+model = "gpt-4.1-mini"
+invalid_json_retries = 2
 ```
 
 ## Offline Prediction Replay
@@ -536,10 +599,7 @@ Evaluate:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --predictions artifacts/my_predictions.jsonl \
-  --model-name my-offline-model
+  --config configs/examples/run_eval_predictions.toml
 ```
 
 Notes:
@@ -550,33 +610,71 @@ Notes:
 
 ## Judge Configuration
 
-By default, `run-eval` uses the OpenAI-compatible judge backend.
+Judge settings live in the `[judge]` section of the TOML file used by `run-eval`.
 
-Required environment variables:
+Typical OpenAI-compatible configuration:
+
+```toml
+[judge]
+backend = "openai"
+base_url = "http://your-judge-endpoint/v1"
+api_key_env = "EVAL_JUDGE_API_KEY"
+model = "gpt-4.1-mini"
+temperature = 0.0
+top_p = 1.0
+top_k = 1
+max_tokens = 256
+n = 1
+seed = 42
+invalid_json_retries = 2
+```
+
+Then export only the secret:
 
 ```bash
-export EVAL_JUDGE_BASE_URL="http://your-judge-endpoint/v1"
 export EVAL_JUDGE_API_KEY="your-api-key"
 ```
 
-Optional:
+You can use `[judge].api_key` directly in TOML, but `api_key_env` is usually cleaner.
 
-```bash
-export EVAL_JUDGE_MODEL="deepseek-ai/DeepSeek-V3.2"
+For local smoke tests you can avoid external judge calls by changing the backend:
+
+```toml
+[judge]
+backend = "static-pass"
 ```
 
-For local smoke tests you can avoid external judge calls:
+or:
 
-```bash
---judge-backend static-pass
---judge-backend static-fail
+```toml
+[judge]
+backend = "static-fail"
 ```
 
-Judge responses are cached under:
+Retry behavior:
 
-```text
-<artifacts-root>/judge_cache/
-```
+- if the judge response is not valid JSON, the framework retries
+- if the judge response is valid JSON but has missing keys, wrong field names, empty required fields, or non-binary score fields, the framework also retries
+- retry count is controlled by `[judge].invalid_json_retries`
+- if all attempts still return malformed judge responses, that sample is deferred to the next run; its prediction stays in `predictions.jsonl`, but no formal row is written to `sample_results.jsonl` this round
+
+## Resume Evaluation
+
+`run-eval` now supports resumable execution at sample granularity.
+
+Behavior:
+
+- predictions are appended to `predictions.jsonl` as each sample finishes inference
+- per-sample results are appended to `sample_results.jsonl` as each sample finishes evaluation
+- if the process is interrupted, rerunning the same config will skip completed samples
+- if interruption happened after prediction was written but before scoring finished, the runner reuses the saved prediction and only reruns scoring
+- resumability is derived from `prepared_data` plus the current `predictions.jsonl` and `sample_results.jsonl`, not from a separate failure list
+
+Important:
+
+- resumability depends on writing into the same run directory
+- in practice you should set a fixed `[run_eval].run_name` for long-running jobs
+- OracleTrack pair evaluation is also resumed through `oracle_pair_results.jsonl`
 
 ## Running Experiment A
 
@@ -585,10 +683,7 @@ Example:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter my_package.my_adapter:MyVideoAdapter \
-  --chain-manifest artifacts/chain_pairs.jsonl
+  --config path/to/run_eval_main.toml
 ```
 
 Outputs are written under:
@@ -601,8 +696,23 @@ Files:
 
 - `predictions.jsonl`
 - `sample_results.jsonl`
+- `run_status.json`
 - `task_summaries.json`
 - `summary.json`
+
+Artifact semantics:
+
+- `predictions.jsonl` stores raw model outputs already obtained for samples in this run directory
+- `sample_results.jsonl` stores only completed evaluation records
+- if a sample already has a prediction but judge or scoring did not complete, it remains absent from `sample_results.jsonl` and will be retried on the next run
+
+`run_status.json` contains:
+
+- total target sample count for this run
+- completed counts before this invocation, in this invocation, and in total
+- `pending_prediction_sample_ids`
+- `predicted_not_evaluated_sample_ids`
+- error summaries for prediction, evaluation, and oracle evaluation in this invocation
 
 `summary.json` includes:
 
@@ -610,6 +720,7 @@ Files:
 - per-task summaries
 - `experiment_b` if a chain manifest was provided
 - whether commentary was supported
+- `run_status` copied from `run_status.json`
 
 `Commentary` is reported separately and excluded from `overall`.
 
@@ -620,19 +731,14 @@ Experiment B requires a chain manifest:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   build-chain-manifest \
-  --data-root data \
-  --out artifacts/chain_pairs.jsonl
+  --config configs/examples/workflow.toml
 ```
 
-Then include it in `run-eval`:
+Then set `[run_eval].chain_manifest` in the TOML used by `run-eval`:
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter my_package.my_adapter:MyVideoAdapter \
-  --chain-manifest artifacts/chain_pairs.jsonl
+```toml
+[run_eval]
+chain_manifest = "artifacts/chain_pairs.jsonl"
 ```
 
 The current runner computes:
@@ -665,11 +771,15 @@ Then run:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter my_package.my_adapter:MyVideoAdapter \
-  --chain-manifest artifacts/chain_pairs.jsonl \
-  --enable-oracle-track
+  --config path/to/run_eval_oracle.toml
+```
+
+with:
+
+```toml
+[run_eval]
+enable_oracle_track = true
+chain_manifest = "artifacts/chain_pairs.jsonl"
 ```
 
 What the framework does:
@@ -683,14 +793,11 @@ What the framework does:
 
 If you do not use a live adapter, provide a second prediction file:
 
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --predictions artifacts/base_predictions.jsonl \
-  --oracle-predictions artifacts/oracle_predictions.jsonl \
-  --chain-manifest artifacts/chain_pairs.jsonl
+```toml
+[run_eval]
+predictions = "artifacts/base_predictions.jsonl"
+oracle_predictions = "artifacts/oracle_predictions.jsonl"
+chain_manifest = "artifacts/chain_pairs.jsonl"
 ```
 
 The framework does not synthesize oracle reruns from the base predictions. You must provide explicit oracle outputs.
@@ -700,7 +807,7 @@ The framework does not synthesize oracle reruns from the base predictions. You m
 If a model does not support `Commentary`, there are two paths:
 
 - in live adapter mode, return `False` from `supports_commentary()`
-- in offline mode, pass `--commentary-unsupported`
+- in offline mode, set `[run_eval].commentary_unsupported = true`
 
 Effect:
 
@@ -712,12 +819,14 @@ Effect:
 Enable it only if you installed the `bertscore` extra:
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --adapter my_package.my_adapter:MyVideoAdapter \
-  --enable-bertscore
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config path/to/run_eval_with_bertscore.toml
+```
+
+with:
+
+```toml
+[run_eval]
+enable_bertscore = true
 ```
 
 Notes:
@@ -732,7 +841,7 @@ The framework follows deterministic failure rules:
 - missing required output field -> fail that component
 - malformed bbox -> fail spatial component
 - malformed sampled interval -> fail temporal component
-- invalid judge JSON -> judge fail
+- malformed judge response -> retry up to `[judge].invalid_json_retries`, then leave the sample unfinished for the next run without writing a completed sample result
 - missing tracking prediction on required sampled frame -> IoU `0`
 
 Additionally:
@@ -759,10 +868,10 @@ The test suite currently covers:
 ### Smoke test everything with the built-in mock adapter
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval validate-data --data-root data
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval build-chain-manifest --data-root data --out artifacts/chain_pairs.jsonl
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --data-root data --prepared-root prepared_data --protocol main
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --prepared-root prepared_data --protocol main --adapter mock --judge-backend static-pass --chain-manifest artifacts/chain_pairs.jsonl
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval validate-data --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval build-chain-manifest --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
 ### Score an offline JSONL export
@@ -770,27 +879,13 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --prepared-root prepar
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   run-eval \
-  --prepared-root prepared_data \
-  --protocol main \
-  --predictions artifacts/my_model_predictions.jsonl \
-  --model-name my-model \
-  --chain-manifest artifacts/chain_pairs.jsonl
+  --config configs/examples/run_eval_predictions.toml
 ```
 
 ### Build all fixed-budget caches in advance
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  prepare-data \
-  --data-root data \
-  --prepared-root prepared_data \
-  --protocol main \
-  --protocol expd_window_16s_2fps \
-  --protocol expd_window_32s_2fps \
-  --protocol expd_window_64s_2fps \
-  --protocol expd_fps_32s_1fps \
-  --protocol expd_fps_32s_2fps \
-  --protocol expd_fps_32s_4fps
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/workflow.toml
 ```
 
 ## Current Limitations
@@ -798,17 +893,17 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 - The repository does not yet include concrete adapters for the 10 baseline models.
 - Experiment C model-native inputs are not standardized in this version.
 - Prepared-data generation currently writes JPEG frame bundles per sample rather than a deduplicated shared frame store.
-- Judge retry logic is not implemented; invalid judge JSON fails directly.
 
 ## Recommended Workflow For Adding A New Model
 
-1. Run `prepare-data` for the protocol(s) you need.
-2. Implement a `BaseModelAdapter` subclass in your own importable module.
-3. Make the adapter consume `sample.frame_files` and `sample.prompt_text`.
-4. Return task outputs in the benchmark’s sampled-frame coordinate space.
-5. Run `run-eval --adapter ...` on `main`.
-6. Add `--chain-manifest` to get Experiment B metrics.
-7. If needed, implement `supports_oracle_track()` and handle `oracle_track=True`.
-8. When the model is stable, run the Experiment D protocol ids from the same prepared cache root.
+1. Create a dedicated TOML file for the model and protocol you want to evaluate.
+2. Run `prepare-data` for the protocol(s) you need.
+3. Implement a `BaseModelAdapter` subclass in your own importable module.
+4. Make the adapter consume `sample.frame_files` and `sample.prompt_text`.
+5. Return task outputs in the benchmark’s sampled-frame coordinate space.
+6. Run `run-eval --config your_model.toml` on `main`.
+7. Set `[run_eval].chain_manifest` to get Experiment B metrics.
+8. If needed, implement `supports_oracle_track()` and handle `oracle_track=True`.
+9. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
 
 If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, normalization, scoring, reporting, and chain accounting remain inside the framework.

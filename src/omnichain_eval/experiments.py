@@ -77,29 +77,17 @@ def compute_bertscore(records: list[EvaluationRecord]) -> None:
         record.component_metrics["bertscore_f1"] = float(score_value)
 
 
-def evaluate_prepared_predictions(
+def summarize_evaluation_records(
     prepared_samples: list[PreparedSample],
-    prediction_map: dict[str, Any],
+    records: list[EvaluationRecord],
     *,
     model_name: str,
-    judge_client: JudgeClient | None,
     commentary_supported: bool = True,
     enable_bertscore: bool = False,
 ) -> dict[str, Any]:
-    records: list[EvaluationRecord] = []
     tasks_present = defaultdict(list)
     for prepared_sample in prepared_samples:
         tasks_present[prepared_sample.task_name].append(prepared_sample)
-        if prepared_sample.task_name == TASK_COMMENTARY and not commentary_supported:
-            continue
-        raw_output = prediction_map.get(prepared_sample.sample_id)
-        records.append(
-            evaluate_sample(
-                prepared_sample,
-                raw_output,
-                judge_client=judge_client,
-            )
-        )
     if enable_bertscore:
         compute_bertscore(records)
 
@@ -117,6 +105,8 @@ def evaluate_prepared_predictions(
                     task_name=task_name,
                     protocol_id=task_samples[0].protocol_id,
                     num_samples=len(task_samples),
+                    num_scored_samples=0,
+                    num_pending_samples=0,
                     task_accuracy=None,
                 )
             )
@@ -127,6 +117,7 @@ def evaluate_prepared_predictions(
                 task_samples[0].protocol_id,
                 task_name,
                 task_records,
+                total_num_samples=len(task_samples),
             )
         )
 
@@ -136,12 +127,48 @@ def evaluate_prepared_predictions(
         if summary.task_name not in TASKS_EXCLUDED_FROM_OVERALL and summary.task_accuracy is not None
     ]
     overall = (sum(included) / len(included)) if included else None
+    records_by_sample_id = {record.sample_id: record for record in records}
+    ordered_records = [
+        records_by_sample_id[prepared_sample.sample_id]
+        for prepared_sample in prepared_samples
+        if prepared_sample.sample_id in records_by_sample_id
+    ]
     return {
-        "records": records,
+        "records": ordered_records,
         "task_summaries": task_summaries,
         "overall": overall,
-        "records_by_sample_id": {record.sample_id: record for record in records},
+        "records_by_sample_id": records_by_sample_id,
     }
+
+
+def evaluate_prepared_predictions(
+    prepared_samples: list[PreparedSample],
+    prediction_map: dict[str, Any],
+    *,
+    model_name: str,
+    judge_client: JudgeClient | None,
+    commentary_supported: bool = True,
+    enable_bertscore: bool = False,
+) -> dict[str, Any]:
+    records: list[EvaluationRecord] = []
+    for prepared_sample in prepared_samples:
+        if prepared_sample.task_name == TASK_COMMENTARY and not commentary_supported:
+            continue
+        raw_output = prediction_map.get(prepared_sample.sample_id)
+        records.append(
+            evaluate_sample(
+                prepared_sample,
+                raw_output,
+                judge_client=judge_client,
+            )
+        )
+    return summarize_evaluation_records(
+        prepared_samples,
+        records,
+        model_name=model_name,
+        commentary_supported=commentary_supported,
+        enable_bertscore=enable_bertscore,
+    )
 
 
 def evaluate_oracle_chain(
@@ -196,10 +223,17 @@ def summarize_experiment_b(
     oracle_understanding_values: list[int] = []
     oracle_reasoning_values: list[int] = []
     oracle_chain_values: list[int] = []
+    pending_pairs = 0
+    pending_oracle_pairs = 0
 
     for pair in chain_pairs:
-        upstream = records_by_sample_id[pair.upstream_sample_id]
-        downstream = records_by_sample_id[pair.downstream_sample_id]
+        upstream = records_by_sample_id.get(pair.upstream_sample_id)
+        downstream = records_by_sample_id.get(pair.downstream_sample_id)
+        if upstream is None or downstream is None:
+            pending_pairs += 1
+            if oracle_pair_results is not None:
+                pending_oracle_pairs += 1
+            continue
         tracking_pass = int(upstream.component_pass.get("tracking_pass", 0))
         if pair.upstream_task_name == TASK_CONTINUOUS_ACTIONS:
             understanding_non_tracking = int(upstream.component_pass.get("judge_pass", 0))
@@ -213,8 +247,12 @@ def summarize_experiment_b(
 
         if oracle_pair_results is None:
             continue
-        oracle_upstream = oracle_pair_results[pair.pair_id]["upstream"]
-        oracle_downstream = oracle_pair_results[pair.pair_id]["downstream"]
+        oracle_pair = oracle_pair_results.get(pair.pair_id)
+        if oracle_pair is None:
+            pending_oracle_pairs += 1
+            continue
+        oracle_upstream = oracle_pair["upstream"]
+        oracle_downstream = oracle_pair["downstream"]
         oracle_tracking_pass = int(oracle_upstream.component_pass.get("tracking_pass", 0))
         if pair.upstream_task_name == TASK_CONTINUOUS_ACTIONS:
             oracle_understanding_non_tracking = int(
@@ -230,18 +268,38 @@ def summarize_experiment_b(
         oracle_reasoning_values.append(oracle_reasoning_pass)
         oracle_chain_values.append(oracle_understanding * oracle_reasoning_pass)
 
+    num_scored_pairs = len(understanding_values)
     summary = {
         "num_chain_samples": len(chain_pairs),
-        "understanding_acc": sum(understanding_values) / len(chain_pairs),
-        "reasoning_acc": sum(reasoning_values) / len(chain_pairs),
-        "chain_success": sum(chain_values) / len(chain_pairs),
+        "num_scored_chain_samples": num_scored_pairs,
+        "num_pending_chain_samples": pending_pairs,
+        "understanding_acc": (
+            sum(understanding_values) / num_scored_pairs if num_scored_pairs else None
+        ),
+        "reasoning_acc": sum(reasoning_values) / num_scored_pairs if num_scored_pairs else None,
+        "chain_success": sum(chain_values) / num_scored_pairs if num_scored_pairs else None,
     }
     if oracle_pair_results is not None:
+        num_scored_oracle_pairs = len(oracle_understanding_values)
         summary.update(
             {
-                "understanding_acc_oracle": sum(oracle_understanding_values) / len(chain_pairs),
-                "reasoning_acc_oracle": sum(oracle_reasoning_values) / len(chain_pairs),
-                "chain_success_oracle": sum(oracle_chain_values) / len(chain_pairs),
+                "num_scored_chain_samples_oracle": num_scored_oracle_pairs,
+                "num_pending_chain_samples_oracle": pending_oracle_pairs,
+                "understanding_acc_oracle": (
+                    sum(oracle_understanding_values) / num_scored_oracle_pairs
+                    if num_scored_oracle_pairs
+                    else None
+                ),
+                "reasoning_acc_oracle": (
+                    sum(oracle_reasoning_values) / num_scored_oracle_pairs
+                    if num_scored_oracle_pairs
+                    else None
+                ),
+                "chain_success_oracle": (
+                    sum(oracle_chain_values) / num_scored_oracle_pairs
+                    if num_scored_oracle_pairs
+                    else None
+                ),
             }
         )
     return summary
