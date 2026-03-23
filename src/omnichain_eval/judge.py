@@ -14,7 +14,6 @@ from .constants import (
     JUDGE_JSON_KEYS,
     JUDGE_MODEL_DEFAULT,
     TASK_AI_COACH,
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -132,7 +131,7 @@ def _task_instruction(task_name: str) -> str:
             "Rule: pass if the main cause is correct and there is no key hallucination. "
             "The main cause must not be replaced by a side effect."
         )
-    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
         return (
             "Rule: judge time alignment and text jointly. Key actions or events must be "
             "covered, temporal order must be correct, and rough alignment must be reasonable."

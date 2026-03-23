@@ -125,7 +125,6 @@ class RunEvalConfig:
     chain_manifest: Path | None = None
     enable_oracle_track: bool = False
     enable_bertscore: bool = False
-    commentary_unsupported: bool = False
     adapter: str | None = None
     structurer: StructurerConfig = field(default_factory=StructurerConfig)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
@@ -248,7 +247,6 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
         chain_manifest=_resolve_path(base_dir, table.get("chain_manifest")),
         enable_oracle_track=bool(table.get("enable_oracle_track", False)),
         enable_bertscore=bool(table.get("enable_bertscore", False)),
-        commentary_unsupported=bool(table.get("commentary_unsupported", False)),
         adapter=table.get("adapter"),
         structurer=_load_structurer_config(base_dir, payload),
         judge=_load_judge_config(base_dir, payload),

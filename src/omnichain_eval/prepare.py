@@ -200,11 +200,6 @@ def build_prepared_sample(
         source_tracking_path=(
             str(sample.source_tracking_path) if sample.source_tracking_path is not None else None
         ),
-        source_commentary_path=(
-            str(sample.source_commentary_path)
-            if sample.source_commentary_path is not None
-            else None
-        ),
         upstream_annotation_id=sample.upstream_annotation_id,
         metadata={
             "num_sampled_frames": len(sampled_frames_original),

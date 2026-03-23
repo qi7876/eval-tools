@@ -38,12 +38,17 @@ Key files:
 - [src/omnichain_eval/dataset.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/dataset.py): raw data loading and validation
 - [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py): sampling rules
 - [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py): prepared-data cache builder
+- [src/omnichain_eval/prompting.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prompting.py): model-input prompt rendering and chain history building
 - [src/omnichain_eval/normalize.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/normalize.py): strict structured-output validation
 - [src/omnichain_eval/structurer.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/structurer.py): fixed structurer LLM integration
+- [src/omnichain_eval/template_pack.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/template_pack.py): shared Markdown prompt-template loading
 - [src/omnichain_eval/metrics.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/metrics.py): scoring logic
 - [src/omnichain_eval/judge.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/judge.py): judge backend
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py): experiment orchestration
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py): adapter interface
+- `prompts/benchmark_v1/`: task-specific inference prompt pack
+- `prompts/structurer_v1/`: task-specific structurer prompt pack
+- `prompts/judge_v1.md`: judge prompt template
 - `configs/examples/`: example TOML configs for common workflows
 
 Generated directories:
@@ -84,10 +89,9 @@ The framework expects a `data/` root with benchmark annotations and videos. At m
 
 - main annotation files like `data/<sport>/<event>/<video_id>.json`
 - videos alongside them as `data/<sport>/<event>/<video_id>.mp4`
-- commentary sidecar files like `commentary_<id>.json`
 - tracking files in `mot/*.txt`
 
-The loader resolves commentary and tracking paths from the raw annotation fields, including paths written like `./data/...` or `./dataset/...`.
+The loader resolves tracking paths from the raw annotation fields, including paths written like `./data/...` or `./dataset/...`.
 
 Each annotation becomes a stable sample id:
 
@@ -128,7 +132,9 @@ That means:
 - prepared-data paths live in TOML
 - protocol ids live in TOML
 - model adapter paths live in TOML
-- judge backend and sampling parameters live in TOML
+- inference prompt roots live in TOML
+- structurer backend and prompt roots live in TOML
+- judge backend and prompt path live in TOML
 
 This makes it practical to maintain one config per experiment, per protocol, or per model.
 
@@ -144,6 +150,7 @@ Supported top-level sections:
 - `[build_chain_manifest]`
 - `[prepare_data]`
 - `[run_eval]`
+- `[structurer]`
 - `[judge]`
 
 Minimal example:
@@ -153,8 +160,17 @@ Minimal example:
 prepared_root = "prepared_data"
 protocol = "main"
 artifacts_root = "artifacts/runs"
+prompt_root = "prompts/benchmark_v1"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 chain_manifest = "artifacts/chain_pairs.jsonl"
+
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+invalid_json_retries = 2
 
 [judge]
 backend = "openai"
@@ -169,6 +185,7 @@ Path rules:
 
 - relative paths are resolved relative to the TOML file location
 - different experiments should use different TOML files
+- keep `[run_eval]`, `[structurer]`, and `[judge]` together in the same run-eval TOML
 - secrets can stay out of TOML by setting `[judge].api_key_env`
 
 ## Typical End-To-End Workflow
@@ -184,7 +201,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 What it does:
 
 - scans all main annotation JSON files
-- resolves linked commentary and tracking files
+- resolves linked tracking files
 - validates task schemas
 - validates `upstream_annotation_id` for `Spatial_Imagination`
 
@@ -389,7 +406,7 @@ prompt_root = "prompts/structurer_v1"
 ```
 
 The adapter class must be importable in the current Python environment.
-`[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 11 task Markdown templates.
+`[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 10 task Markdown templates.
 `[structurer].prompt_root` is also required and must point to the structurer prompt pack.
 
 ### Adapter Interface
@@ -407,9 +424,6 @@ class MyAdapter(BaseModelAdapter):
     @property
     def name(self) -> str:
         return "my-model"
-
-    def supports_commentary(self) -> bool:
-        return True
 
     def supports_oracle_track(self) -> bool:
         return False
@@ -483,7 +497,7 @@ Canonical expectations by task:
 {"text": "...", "bbox_a": [xtl, ytl, xbr, ybr], "bbox_b": [xtl, ytl, xbr, ybr]}
 ```
 
-- `Continuous_Events_Caption` and `Commentary`:
+- `Continuous_Events_Caption`:
 
 ```json
 {
@@ -539,9 +553,6 @@ class MyVideoAdapter(BaseModelAdapter):
     def name(self) -> str:
         return "my-video-model"
 
-    def supports_commentary(self) -> bool:
-        return False
-
     def predict(
         self,
         model_input: ModelInput,
@@ -578,6 +589,7 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 
 [judge]
 backend = "openai"
+prompt_path = "prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -593,6 +605,48 @@ model = "gpt-4.1-mini"
 invalid_json_retries = 2
 concurrency = 1
 ```
+
+## Structurer Configuration
+
+Structurer settings live in the `[structurer]` section of the TOML file used by `run-eval`.
+`[structurer].prompt_root` must point to a directory containing one Markdown template per task.
+
+Typical OpenAI-compatible configuration:
+
+```toml
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+temperature = 0.0
+top_p = 1.0
+top_k = 1
+max_tokens = 512
+n = 1
+seed = 42
+invalid_json_retries = 2
+concurrency = 1
+```
+
+For local smoke tests you can skip the external structurer API and use:
+
+```toml
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+invalid_json_retries = 1
+concurrency = 1
+```
+
+Retry behavior:
+
+- if the structurer response is not valid JSON, the framework retries
+- if the structurer response is JSON but fails the strict task schema, the framework also retries
+- retry count is controlled by `[structurer].invalid_json_retries`
+- if all attempts still fail, that sample is deferred to the next run without writing a structured artifact row
+- structurer execution runs asynchronously in the background; `[structurer].concurrency` controls the number of concurrent workers
 
 ## Judge Configuration
 
@@ -721,14 +775,11 @@ Artifact semantics:
 - `overall`
 - per-task summaries
 - `experiment_b` if a chain manifest was provided
-- whether commentary was supported
 - `pending_chain_prediction_sample_ids`
 - `chain_predicted_not_structured_sample_ids`
 - `chain_structured_not_evaluated_sample_ids`
 - `blocked_chain_sample_ids`
 - error summaries for normal, chain, and oracle evaluation in this invocation
-
-`Commentary` is reported separately and excluded from `overall`.
 
 ## Running Experiment B
 
@@ -792,17 +843,8 @@ What the framework does:
 
 - reruns the upstream and downstream pair through the adapter
 - sets `oracle_track=True` in the adapter call
-- also passes chain metadata through `context`
+- rebuilds downstream chain history from the upstream question plus upstream raw answer
 - replaces tracking with GT during upstream scoring where the task requires it
-
-## Commentary Support
-
-If a model does not support `Commentary`, return `False` from `supports_commentary()`.
-
-Effect:
-
-- commentary is marked `N/A`
-- commentary is excluded from `overall`
 
 ## BERTScore
 
@@ -842,7 +884,8 @@ Additionally:
 ## Running Tests
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra dev pytest
+UV_CACHE_DIR=/tmp/uv-cache uv run ruff check .
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest
 ```
 
 The test suite currently covers:
@@ -851,6 +894,8 @@ The test suite currently covers:
 - chain manifest generation
 - prepared-data building
 - mock adapter evaluation
+- structurer retry and validation behavior
+- resumable prediction -> structuring -> evaluation flow
 - Experiment B summary flow
 
 ## Common Recipes
@@ -890,3 +935,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 10. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
 
 If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, prompt construction, chain accounting, structured extraction, scoring, and summary generation remain inside the framework.
+
+In practice the adapter only owns two things:
+
+- how to turn `model_input.sample.frame_files` plus `model_input.messages` into a real model call
+- how to return the model's raw answer as a string

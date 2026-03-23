@@ -9,7 +9,6 @@ from .constants import (
     BBOX_IOU_THRESHOLD,
     JUDGE_REQUIRED_TASKS,
     TASK_AI_COACH,
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -80,7 +79,7 @@ def _closed_factual_pass(decision: JudgeDecision) -> int:
 def _judge_reference_payload(task_name: str, reference_payload: dict[str, Any]) -> dict[str, Any]:
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
         return {"text": reference_payload["text"]}
-    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
         return {"reference_segments": reference_payload["segments_original"]}
     raise ValueError(f"unsupported judge reference payload for {task_name}")
 
@@ -93,7 +92,7 @@ def _judge_prediction_payload(
 ) -> dict[str, Any]:
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
         return {"text": structured_prediction["text"]}
-    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
         return {"prediction_segments": predicted_segments_original or []}
     raise ValueError(f"unsupported judge prediction payload for {task_name}")
 
@@ -212,7 +211,7 @@ def _bertscore_pair(
         return None, None
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
         return reference_payload["text"], structured_prediction["text"]
-    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
         return (
             _linearize_segments(reference_payload["segments_original"]),
             _linearize_segments(predicted_segments_original or []),
@@ -323,7 +322,7 @@ def evaluate_sample(
         )
         component_pass["judge_pass"] = judge_pass
         task_pass = judge_pass
-    elif prepared_sample.task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    elif prepared_sample.task_name == TASK_CONTINUOUS_EVENTS:
         if structured is not None:
             predicted_segments_original, segment_errors = _map_segments_to_original(
                 structured,

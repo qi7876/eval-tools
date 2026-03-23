@@ -45,13 +45,6 @@
       "Q_window_frame": [100, 150],
       "question": "Describe the trajectory from the camera view.",
       "answer": "The athlete moves from left to right before rising slightly during the jump."
-    },
-    {
-      "annotation_id": "5",
-      "task_L1": "Special",
-      "task_L2": "Commentary",
-      "Q_window_frame": [300, 360],
-      "commentary": "./data/TestSport/TestEvent/commentary_5.json"
     }
   ]
 }

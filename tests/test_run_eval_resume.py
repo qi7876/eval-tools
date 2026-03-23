@@ -84,9 +84,6 @@ class CountingAdapter(BaseModelAdapter):
     def name(self) -> str:
         return "counting-mock"
 
-    def supports_commentary(self) -> bool:
-        return True
-
     def predict(self, model_input: ModelInput):
         sample_id = model_input.sample.sample_id
         self.calls.append(sample_id)
@@ -363,9 +360,9 @@ def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, 
     ).read_text(encoding="utf-8").strip().splitlines()
     chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
 
-    assert len(prediction_rows) == 4
-    assert len(structured_rows) == 4
-    assert len(result_rows) == 4
+    assert len(prediction_rows) == 3
+    assert len(structured_rows) == 3
+    assert len(result_rows) == 3
     assert len(chain_prediction_rows) == 1
     assert len(chain_structured_rows) == 1
     assert len(chain_result_rows) == 1

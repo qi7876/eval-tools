@@ -36,7 +36,7 @@ def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
 def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
     records, issues = scan_dataset(FIXTURE_ROOT)
     assert not issues
-    assert len(records) == 5
+    assert len(records) == 4
 
     chain_path = tmp_path / "chain_pairs.jsonl"
     pairs = build_chain_manifest(FIXTURE_ROOT, chain_path)
@@ -55,11 +55,10 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
 
     main_samples = load_prepared_samples(prepared_root, "main")
     expd_samples = load_prepared_samples(prepared_root, "expd_window_32s_2fps")
-    assert len(main_samples) == 5
+    assert len(main_samples) == 4
     assert {sample.task_name for sample in expd_samples} == {
         "Continuous_Actions_Caption",
         "Spatial_Imagination",
-        "Commentary",
     }
 
     adapter = MockAdapter()
@@ -92,7 +91,6 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
         },
         model_name="mock",
         judge_client=StaticJudgeClient(always_pass=True),
-        commentary_supported=True,
     )
     assert evaluation["overall"] == 1.0
 

@@ -36,12 +36,17 @@
 - [src/omnichain_eval/dataset.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/dataset.py)：原始数据加载和校验
 - [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py)：采样协议
 - [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py)：prepared-data 构建
+- [src/omnichain_eval/prompting.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prompting.py)：模型输入 prompt 渲染和链式历史构造
 - [src/omnichain_eval/normalize.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/normalize.py)：结构化输出严格校验
 - [src/omnichain_eval/structurer.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/structurer.py)：固定 structurer LLM 接口
+- [src/omnichain_eval/template_pack.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/template_pack.py)：通用 Markdown prompt 模板加载
 - [src/omnichain_eval/metrics.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/metrics.py)：指标计算
 - [src/omnichain_eval/judge.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/judge.py)：Judge 接口
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)：实验编排
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py)：模型 adapter 接口
+- `prompts/benchmark_v1/`：任务级 inference prompt 模板
+- `prompts/structurer_v1/`：任务级 structurer prompt 模板
+- `prompts/judge_v1.md`：judge prompt 模板
 - `configs/examples/`：常见流程的 TOML 示例配置
 
 运行后产生的目录：
@@ -82,7 +87,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra bertscore
 
 - 主标注：`data/<sport>/<event>/<video_id>.json`
 - 视频：`data/<sport>/<event>/<video_id>.mp4`
-- Commentary GT：`commentary_<id>.json`
 - Tracking GT：`mot/*.txt`
 
 每个 annotation 会被转换成稳定的 `sample_id`：
@@ -102,7 +106,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra bertscore
 - `question` / `query`
 - `Q_window_frame`
 - `A_window_frame`
-- `commentary`
 - `tracking_bboxes`
 - `upstream_annotation_id`
 
@@ -135,7 +138,9 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 - prepared-data 路径
 - protocol id
 - adapter 路径
-- judge backend 与生成参数
+- inference prompt 路径
+- structurer backend 与 prompt 路径
+- judge backend 与 prompt 路径
 
 这样你就可以为不同实验、不同协议、不同模型分别维护不同的 TOML 文件。
 
@@ -151,6 +156,7 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 - `[build_chain_manifest]`
 - `[prepare_data]`
 - `[run_eval]`
+- `[structurer]`
 - `[judge]`
 
 最小 `run-eval` 示例：
@@ -160,8 +166,17 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 prepared_root = "prepared_data"
 protocol = "main"
 artifacts_root = "artifacts/runs"
+prompt_root = "prompts/benchmark_v1"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 chain_manifest = "artifacts/chain_pairs.jsonl"
+
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+invalid_json_retries = 2
 
 [judge]
 backend = "openai"
@@ -176,6 +191,7 @@ invalid_json_retries = 2
 
 - 相对路径都以当前 TOML 文件所在目录为基准解析
 - 不同实验建议拆成不同 TOML 文件
+- `run-eval` 相关的 `[run_eval]`、`[structurer]`、`[judge]` 建议放在同一个 TOML 中统一管理
 - 密钥更建议通过 `[judge].api_key_env` 指向环境变量
 
 ## 标准工作流
@@ -200,7 +216,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 这个命令会：
 
 - 扫描所有主标注 JSON
-- 解析 linked commentary 文件
 - 解析 MOT tracking 文件
 - 校验任务 schema
 - 校验 `Spatial_Imagination` 是否带有合法的 `upstream_annotation_id`
@@ -435,7 +450,7 @@ backend = "openai"
 prompt_root = "prompts/structurer_v1"
 ```
 
-`[run_eval].prompt_root` 现在是必填项，必须指向一个包含 11 个任务 Markdown 模板的 prompt 目录。
+`[run_eval].prompt_root` 现在是必填项，必须指向一个包含 10 个任务 Markdown 模板的 prompt 目录。
 `[structurer].prompt_root` 也是必填项，必须指向 structurer prompt 模板目录。
 
 ### adapter 接口
@@ -453,9 +468,6 @@ class MyAdapter(BaseModelAdapter):
     @property
     def name(self) -> str:
         return "my-model"
-
-    def supports_commentary(self) -> bool:
-        return True
 
     def supports_oracle_track(self) -> bool:
         return False
@@ -538,7 +550,7 @@ adapter 应直接返回模型的原始回答字符串。
 }
 ```
 
-#### `Continuous_Events_Caption` / `Commentary`
+#### `Continuous_Events_Caption`
 
 ```json
 {
@@ -593,9 +605,6 @@ class MyVideoAdapter(BaseModelAdapter):
     def name(self) -> str:
         return "my-video-model"
 
-    def supports_commentary(self) -> bool:
-        return False
-
     def predict(
         self,
         model_input: ModelInput,
@@ -631,6 +640,7 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 
 [judge]
 backend = "openai"
+prompt_path = "prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -646,6 +656,48 @@ model = "gpt-4.1-mini"
 invalid_json_retries = 2
 concurrency = 1
 ```
+
+## Structurer 配置
+
+Structurer 的配置写在 `run-eval` 所使用 TOML 的 `[structurer]` section 里。
+`[structurer].prompt_root` 必须指向一个目录，目录里要为每个任务提供一个 Markdown 模板。
+
+典型 OpenAI-compatible 配置如下：
+
+```toml
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+temperature = 0.0
+top_p = 1.0
+top_k = 1
+max_tokens = 512
+n = 1
+seed = 42
+invalid_json_retries = 2
+concurrency = 1
+```
+
+如果只是本地 smoke test，也可以不调用外部 structurer API，直接使用：
+
+```toml
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+invalid_json_retries = 1
+concurrency = 1
+```
+
+当前 retry 规则：
+
+- structurer 返回内容如果不是合法 JSON，会自动重试
+- structurer 返回内容即使是合法 JSON，只要不满足该任务的严格结构校验，也会自动重试
+- 重试次数由 `[structurer].invalid_json_retries` 控制
+- 如果所有尝试都失败，该样本会留到下一轮继续，本轮不会写入结构化产物
+- Structurer 在后台异步执行；`[structurer].concurrency` 控制并发 worker 数
 
 ## Judge 配置
 
@@ -774,17 +826,11 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 - `overall`
 - 各 task 的 summary
 - `experiment_b`
-- 是否支持 commentary
 - `pending_chain_prediction_sample_ids`
 - `chain_predicted_not_structured_sample_ids`
 - `chain_structured_not_evaluated_sample_ids`
 - `blocked_chain_sample_ids`
 - 本轮 normal / chain / oracle 失败摘要
-
-说明：
-
-- `Commentary` 单独报告
-- `overall` 不包含 `Commentary`
 
 ## 运行 Experiment B
 
@@ -848,17 +894,8 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 - 对 chain pair 做 rerun
 - 调用 adapter 时传入 `oracle_track=True`
-- 同时通过 `context` 提供 chain metadata
+- 下游输入会重新基于“上游问题 + 上游原始回答”构建链式历史
 - 在上游评分时用 GT tracking 替换 tracking 分量
-
-## Commentary 支持
-
-如果模型不支持 commentary，直接让 adapter 返回 `supports_commentary() == False`。
-
-效果：
-
-- commentary 记为 `N/A`
-- `overall` 不受影响
 
 ## BERTScore
 
@@ -904,7 +941,8 @@ enable_bertscore = true
 ## 运行测试
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run --extra dev pytest
+UV_CACHE_DIR=/tmp/uv-cache uv run ruff check .
+UV_CACHE_DIR=/tmp/uv-cache uv run pytest
 ```
 
 当前测试覆盖：
@@ -913,6 +951,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run --extra dev pytest
 - chain manifest 生成
 - prepared-data 构建
 - mock adapter 评测
+- structurer 重试和结构校验逻辑
+- prediction -> structuring -> evaluation 的断点续测
 - Experiment B 汇总流程
 
 ## 常用命令模板
@@ -964,5 +1004,5 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 
 你只需要负责：
 
-- 如何把 `PreparedSample` 转成模型输入
-- 如何把模型输出转成 benchmark 所需格式
+- 如何把 `model_input.sample.frame_files` 和 `model_input.messages` 送进真实模型
+- 如何把模型原始回答字符串返回给框架

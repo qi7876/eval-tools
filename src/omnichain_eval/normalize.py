@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from .constants import (
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -179,7 +178,7 @@ def validate_structured_prediction(
             structurer_raw_response=structurer_raw_response,
         )
 
-    if task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name == TASK_CONTINUOUS_EVENTS:
         validated = {
             "segments": _coerce_segments(
                 structured_prediction.get("segments"),

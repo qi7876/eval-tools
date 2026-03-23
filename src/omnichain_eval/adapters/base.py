@@ -7,7 +7,6 @@ import json
 from abc import ABC, abstractmethod
 
 from ..constants import (
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -24,9 +23,6 @@ class BaseModelAdapter(ABC):
     @property
     def name(self) -> str:
         return self.__class__.__name__
-
-    def supports_commentary(self) -> bool:
-        return True
 
     def supports_oracle_track(self) -> bool:
         return False
@@ -63,7 +59,7 @@ class MockAdapter(BaseModelAdapter):
                 "bbox_a": reference["bbox_a"],
                 "bbox_b": reference["bbox_b"],
             }
-        elif sample.task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+        elif sample.task_name == TASK_CONTINUOUS_EVENTS:
             payload = {"segments": reference["segments_sampled"]}
         elif sample.task_name == TASK_CONTINUOUS_ACTIONS:
             payload = {

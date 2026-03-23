@@ -450,14 +450,9 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     structurer_service = _structurer_service_from_config(config.structurer)
 
     adapter = resolve_adapter(config.adapter)
-    commentary_supported = adapter.supports_commentary()
     model_name = config.model_name or adapter.name
 
-    target_samples = [
-        sample
-        for sample in prepared_samples
-        if not (sample.task_name == "Commentary" and not commentary_supported)
-    ]
+    target_samples = list(prepared_samples)
     target_sample_ids = {sample.sample_id for sample in target_samples}
     rendered_prompts_by_sample_id = _render_prompts_for_samples(prompt_pack, target_samples)
 
@@ -828,7 +823,6 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         prepared_samples,
         ordered_records,
         model_name=model_name,
-        commentary_supported=commentary_supported,
         enable_bertscore=config.enable_bertscore,
     )
 
@@ -1018,7 +1012,6 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         "overall": evaluation["overall"],
         "task_summaries": [summary.to_dict() for summary in evaluation["task_summaries"]],
         "experiment_b": oracle_summary,
-        "commentary_supported": commentary_supported,
         "run_status": run_status,
     }
     write_json(summary_path, summary_payload)

@@ -13,7 +13,6 @@ from .constants import (
     STRUCTURER_MODEL_DEFAULT,
     STRUCTURER_SYSTEM_PROMPT,
     TASK_AI_COACH,
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -185,7 +184,7 @@ def _output_schema(task_name: str) -> str:
         return json.dumps({"text": "", "bbox": []}, ensure_ascii=False, indent=2)
     if task_name == TASK_OBJECTS_SPATIAL:
         return json.dumps({"text": "", "bbox_a": [], "bbox_b": []}, ensure_ascii=False, indent=2)
-    if task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name == TASK_CONTINUOUS_EVENTS:
         return json.dumps({"segments": []}, ensure_ascii=False, indent=2)
     if task_name == TASK_CONTINUOUS_ACTIONS:
         return json.dumps({"segments": [], "tracking": []}, ensure_ascii=False, indent=2)

@@ -9,7 +9,6 @@ adapter = "mock"
 chain_manifest = "../../artifacts/chain_pairs.jsonl"
 enable_oracle_track = false
 enable_bertscore = false
-commentary_unsupported = false
 
 [judge]
 backend = "static-pass"

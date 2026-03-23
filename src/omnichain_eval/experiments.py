@@ -9,10 +9,8 @@ from typing import Any
 from .adapters.base import BaseModelAdapter
 from .constants import (
     BERTSCORE_MODEL,
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_STG,
-    TASKS_EXCLUDED_FROM_OVERALL,
 )
 from .dataset import load_dataset
 from .judge import JudgeClient
@@ -89,7 +87,6 @@ def summarize_evaluation_records(
     records: list[EvaluationRecord],
     *,
     model_name: str,
-    commentary_supported: bool = True,
     enable_bertscore: bool = False,
 ) -> dict[str, Any]:
     tasks_present = defaultdict(list)
@@ -105,19 +102,6 @@ def summarize_evaluation_records(
     task_summaries: list[TaskSummary] = []
     for task_name, task_samples in sorted(tasks_present.items()):
         task_records = records_by_task.get(task_name, [])
-        if task_name == TASK_COMMENTARY and not commentary_supported:
-            task_summaries.append(
-                TaskSummary(
-                    model_name=model_name,
-                    task_name=task_name,
-                    protocol_id=task_samples[0].protocol_id,
-                    num_samples=len(task_samples),
-                    num_scored_samples=0,
-                    num_pending_samples=0,
-                    task_accuracy=None,
-                )
-            )
-            continue
         task_summaries.append(
             summarize_task_records(
                 model_name,
@@ -131,7 +115,7 @@ def summarize_evaluation_records(
     included = [
         summary.task_accuracy
         for summary in task_summaries
-        if summary.task_name not in TASKS_EXCLUDED_FROM_OVERALL and summary.task_accuracy is not None
+        if summary.task_accuracy is not None
     ]
     overall = (sum(included) / len(included)) if included else None
     records_by_sample_id = {record.sample_id: record for record in records}
@@ -154,13 +138,10 @@ def evaluate_prepared_predictions(
     *,
     model_name: str,
     judge_client: JudgeClient | None,
-    commentary_supported: bool = True,
     enable_bertscore: bool = False,
 ) -> dict[str, Any]:
     records: list[EvaluationRecord] = []
     for prepared_sample in prepared_samples:
-        if prepared_sample.task_name == TASK_COMMENTARY and not commentary_supported:
-            continue
         structured_record = structured_prediction_map.get(prepared_sample.sample_id)
         if structured_record is None:
             continue
@@ -175,7 +156,6 @@ def evaluate_prepared_predictions(
         prepared_samples,
         records,
         model_name=model_name,
-        commentary_supported=commentary_supported,
         enable_bertscore=enable_bertscore,
     )
 

@@ -8,7 +8,6 @@ model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 enable_oracle_track = false
 enable_bertscore = false
-commentary_unsupported = false
 
 [judge]
 backend = "openai"

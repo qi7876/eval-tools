@@ -7,7 +7,6 @@ from typing import Any
 
 from .constants import (
     TASK_AI_COACH,
-    TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -59,7 +58,7 @@ def _output_contract(task_name: str) -> str:
             'Return JSON only: {"text": "...", "bbox_a": [xtl, ytl, xbr, ybr], '
             '"bbox_b": [xtl, ytl, xbr, ybr]}'
         )
-    if task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+    if task_name == TASK_CONTINUOUS_EVENTS:
         return (
             'Return JSON only: {"segments": [{"start_sampled": 0, "end_sampled": 3, '
             '"text": "..."}]}'

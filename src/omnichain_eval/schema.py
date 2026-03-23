@@ -37,7 +37,6 @@ class SampleRecord:
     q_window: tuple[int, int] | None = None
     a_window: tuple[int, int] | None = None
     source_tracking_path: Path | None = None
-    source_commentary_path: Path | None = None
     upstream_annotation_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -78,7 +77,6 @@ class PreparedSample:
     q_window: tuple[int, int] | None = None
     a_window: tuple[int, int] | None = None
     source_tracking_path: str | None = None
-    source_commentary_path: str | None = None
     upstream_annotation_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -108,7 +106,6 @@ class PreparedSample:
             q_window=tuple(payload["q_window"]) if payload.get("q_window") else None,
             a_window=tuple(payload["a_window"]) if payload.get("a_window") else None,
             source_tracking_path=payload.get("source_tracking_path"),
-            source_commentary_path=payload.get("source_commentary_path"),
             upstream_annotation_id=payload.get("upstream_annotation_id"),
             metadata=payload.get("metadata", {}),
         )
