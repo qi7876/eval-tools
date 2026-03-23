@@ -10,12 +10,19 @@ from omnichain_eval.judge import JudgeClient, JudgeResponseFormatExhaustedError,
 from omnichain_eval.metrics import evaluate_sample
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
 from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
-from omnichain_eval.schema import ModelInput
+from omnichain_eval.schema import ModelInput, StructuredPredictionRecord
+from omnichain_eval.structurer import (
+    StaticParseStructurerBackend,
+    StructurerService,
+    load_structurer_prompt_pack,
+)
 from omnichain_eval.utils import write_jsonl
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mini_data"
 PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_v1"
+STRUCTURER_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
+JUDGE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1.md"
 
 
 def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
@@ -31,6 +38,26 @@ def build_test_model_input(sample, *, oracle_track: bool = False) -> ModelInput:
         sample,
         render_prompt(prompt_pack, sample, oracle_track=oracle_track),
         oracle_track=oracle_track,
+    )
+
+
+def build_test_structured_record(sample, raw_output: str) -> StructuredPredictionRecord:
+    structurer_service = StructurerService(
+        backend=StaticParseStructurerBackend(),
+        prompt_pack=load_structurer_prompt_pack(STRUCTURER_PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+    structured_result = structurer_service.structure(sample, raw_output)
+    return StructuredPredictionRecord(
+        sample_id=sample.sample_id,
+        task_name=sample.task_name,
+        video_key=sample.video_key,
+        protocol_id=sample.protocol_id,
+        raw_output=structured_result.raw_output,
+        structured_prediction=structured_result.structured_prediction,
+        structuring_errors=structured_result.errors,
+        structuring_warnings=structured_result.warnings,
+        structurer_raw_response=structured_result.structurer_raw_response,
     )
 
 
@@ -73,6 +100,8 @@ def _config_text(
     artifacts_root: Path,
     run_name: str,
     chain_manifest: Path | None,
+    judge_invalid_json_retries: int = 0,
+    structurer_invalid_json_retries: int = 0,
 ) -> str:
     chain_manifest_line = f'chain_manifest = "{chain_manifest}"\n' if chain_manifest else ""
     return f"""
@@ -87,6 +116,15 @@ adapter = "mock"
 
 [judge]
 backend = "static-pass"
+prompt_path = "{JUDGE_PROMPT_PATH}"
+invalid_json_retries = {judge_invalid_json_retries}
+concurrency = 1
+
+[structurer]
+backend = "static-parse"
+prompt_root = "{STRUCTURER_PROMPT_ROOT}"
+invalid_json_retries = {structurer_invalid_json_retries}
+concurrency = 1
 """.strip()
 
 
@@ -109,7 +147,10 @@ def test_evaluate_sample_skips_question_when_judge_format_errors_are_exhausted(
     try:
         evaluate_sample(
             sample,
-            MockAdapter().predict(build_test_model_input(sample)),
+            build_test_structured_record(
+                sample,
+                MockAdapter().predict(build_test_model_input(sample)),
+            ),
             judge_client=AlwaysBrokenJudge(),
         )
     except JudgeResponseFormatExhaustedError as exc:
@@ -135,9 +176,10 @@ def test_run_eval_resumes_from_existing_results(monkeypatch, tmp_path):
     run_dir.mkdir(parents=True, exist_ok=True)
     first_sample = next(sample for sample in prepared_samples if sample.task_name != "Spatial_Imagination")
     first_raw_output = adapter._mock.predict(build_test_model_input(first_sample))
+    first_structured_record = build_test_structured_record(first_sample, first_raw_output)
     first_record = evaluate_sample(
         first_sample,
-        first_raw_output,
+        first_structured_record,
         judge_client=StaticJudgeClient(always_pass=True),
     )
     write_jsonl(
@@ -149,6 +191,10 @@ def test_run_eval_resumes_from_existing_results(monkeypatch, tmp_path):
                 "protocol_id": "main",
             }
         ],
+    )
+    write_jsonl(
+        run_dir / "structured_predictions.jsonl",
+        [first_structured_record.to_dict()],
     )
     write_jsonl(run_dir / "results.jsonl", [first_record.to_dict()])
 
@@ -172,13 +218,20 @@ def test_run_eval_resumes_from_existing_results(monkeypatch, tmp_path):
     assert len(adapter.calls) == len(prepared_samples) - 1
 
     sample_result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    structured_rows = (
+        run_dir / "structured_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
     prediction_rows = (run_dir / "predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
     chain_prediction_rows = (
         run_dir / "chain_predictions.jsonl"
     ).read_text(encoding="utf-8").strip().splitlines()
+    chain_structured_rows = (
+        run_dir / "chain_structured_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
     chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(sample_result_rows) + len(chain_result_rows) == len(prepared_samples)
     assert len(prediction_rows) + len(chain_prediction_rows) == len(prepared_samples)
+    assert len(structured_rows) + len(chain_structured_rows) == len(prepared_samples)
 
 
 def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkeypatch, tmp_path):
@@ -200,8 +253,8 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
             artifacts_root=artifacts_root,
             run_name="retry-run",
             chain_manifest=chain_manifest_path,
-        )
-        + "\ninvalid_json_retries = 1\n",
+            judge_invalid_json_retries=1,
+        ),
         encoding="utf-8",
     )
 
@@ -237,7 +290,7 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
     run_dir = artifacts_root / "retry-run"
     first_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     first_status = first_summary["run_status"]
-    pending_ids = first_status["predicted_not_evaluated_sample_ids"]
+    pending_ids = first_status["structured_not_evaluated_sample_ids"]
     assert len(pending_ids) == 1
 
     adapter.calls.clear()
@@ -252,15 +305,22 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
     assert adapter.calls == []
     second_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     second_status = second_summary["run_status"]
-    assert second_status["predicted_not_evaluated_sample_ids"] == []
+    assert second_status["structured_not_evaluated_sample_ids"] == []
     sample_result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    structured_rows = (
+        run_dir / "structured_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
     prediction_rows = (run_dir / "predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
     chain_prediction_rows = (
         run_dir / "chain_predictions.jsonl"
     ).read_text(encoding="utf-8").strip().splitlines()
+    chain_structured_rows = (
+        run_dir / "chain_structured_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
     chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
     assert len(sample_result_rows) + len(chain_result_rows) == len(load_prepared_samples(prepared_root, "main"))
     assert len(prediction_rows) + len(chain_prediction_rows) == len(load_prepared_samples(prepared_root, "main"))
+    assert len(structured_rows) + len(chain_structured_rows) == len(load_prepared_samples(prepared_root, "main"))
 
 
 def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, tmp_path):
@@ -293,13 +353,21 @@ def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, 
     assert exit_code == 0
     run_dir = artifacts_root / "chain-run"
     prediction_rows = (run_dir / "predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    structured_rows = (
+        run_dir / "structured_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
     result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
     chain_prediction_rows = (run_dir / "chain_predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    chain_structured_rows = (
+        run_dir / "chain_structured_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
     chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
 
     assert len(prediction_rows) == 4
+    assert len(structured_rows) == 4
     assert len(result_rows) == 4
     assert len(chain_prediction_rows) == 1
+    assert len(chain_structured_rows) == 1
     assert len(chain_result_rows) == 1
 
     downstream_sample_id = "TestSport/TestEvent/1#4"
@@ -315,10 +383,12 @@ def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, 
     expected_upstream_output = MockAdapter().predict(build_test_model_input(upstream_sample))
     assert [message["role"] for message in messages] == ["system", "user", "assistant", "user"]
     assert messages[1]["content"] == "Describe the athlete actions."
-    assert messages[2]["content"] == json.dumps(expected_upstream_output, ensure_ascii=False)
+    assert messages[2]["content"] == expected_upstream_output
 
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["run_status"]["pending_chain_prediction_sample_ids"] == []
+    assert summary["run_status"]["chain_predicted_not_structured_sample_ids"] == []
+    assert summary["run_status"]["chain_structured_not_evaluated_sample_ids"] == []
     assert summary["run_status"]["blocked_chain_sample_ids"] == []
 
 

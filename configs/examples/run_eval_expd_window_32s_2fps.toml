@@ -12,6 +12,7 @@ commentary_unsupported = false
 
 [judge]
 backend = "openai"
+prompt_path = "../../prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -19,6 +20,21 @@ temperature = 0.0
 top_p = 1.0
 top_k = 1
 max_tokens = 256
+n = 1
+seed = 42
+invalid_json_retries = 2
+concurrency = 1
+
+[structurer]
+backend = "openai"
+prompt_root = "../../prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+temperature = 0.0
+top_p = 1.0
+top_k = 1
+max_tokens = 512
 n = 1
 seed = 42
 invalid_json_retries = 2

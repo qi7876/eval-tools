@@ -19,7 +19,14 @@ from .judge import JudgeClient
 from .metrics import evaluate_sample, summarize_task_records
 from .prompting import PromptTemplate, build_chain_history, build_model_input, render_prompt
 from .prepare import load_prepared_samples
-from .schema import ChainPairRecord, EvaluationRecord, PreparedSample, TaskSummary
+from .schema import (
+    ChainPairRecord,
+    EvaluationRecord,
+    PreparedSample,
+    StructuredPredictionRecord,
+    TaskSummary,
+)
+from .structurer import StructurerService
 from .utils import read_jsonl, write_jsonl
 
 
@@ -143,7 +150,7 @@ def summarize_evaluation_records(
 
 def evaluate_prepared_predictions(
     prepared_samples: list[PreparedSample],
-    prediction_map: dict[str, Any],
+    structured_prediction_map: dict[str, StructuredPredictionRecord],
     *,
     model_name: str,
     judge_client: JudgeClient | None,
@@ -154,11 +161,13 @@ def evaluate_prepared_predictions(
     for prepared_sample in prepared_samples:
         if prepared_sample.task_name == TASK_COMMENTARY and not commentary_supported:
             continue
-        raw_output = prediction_map.get(prepared_sample.sample_id)
+        structured_record = structured_prediction_map.get(prepared_sample.sample_id)
+        if structured_record is None:
+            continue
         records.append(
             evaluate_sample(
                 prepared_sample,
-                raw_output,
+                structured_record,
                 judge_client=judge_client,
             )
         )
@@ -177,6 +186,7 @@ def evaluate_oracle_chain(
     chain_pairs: list[ChainPairRecord],
     *,
     prompt_pack: dict[str, PromptTemplate],
+    structurer_service: StructurerService,
     judge_client: JudgeClient | None,
 ) -> dict[str, dict[str, EvaluationRecord]]:
     pair_results: dict[str, dict[str, EvaluationRecord]] = {}
@@ -199,17 +209,39 @@ def evaluate_oracle_chain(
                 conversation_history=conversation_history,
             )
         )
+        upstream_structured = structurer_service.structure(upstream_sample, upstream_raw)
+        downstream_structured = structurer_service.structure(downstream_sample, downstream_raw)
         pair_results[pair.pair_id] = {
             "upstream": evaluate_sample(
                 upstream_sample,
-                upstream_raw,
+                StructuredPredictionRecord(
+                    sample_id=upstream_sample.sample_id,
+                    task_name=upstream_sample.task_name,
+                    video_key=upstream_sample.video_key,
+                    protocol_id=upstream_sample.protocol_id,
+                    raw_output=upstream_structured.raw_output,
+                    structured_prediction=upstream_structured.structured_prediction,
+                    structuring_errors=upstream_structured.errors,
+                    structuring_warnings=upstream_structured.warnings,
+                    structurer_raw_response=upstream_structured.structurer_raw_response,
+                ),
                 judge_client=judge_client,
                 override_tracking_with_gt=upstream_sample.task_name
                 in {TASK_CONTINUOUS_ACTIONS, TASK_STG},
             ),
             "downstream": evaluate_sample(
                 downstream_sample,
-                downstream_raw,
+                StructuredPredictionRecord(
+                    sample_id=downstream_sample.sample_id,
+                    task_name=downstream_sample.task_name,
+                    video_key=downstream_sample.video_key,
+                    protocol_id=downstream_sample.protocol_id,
+                    raw_output=downstream_structured.raw_output,
+                    structured_prediction=downstream_structured.structured_prediction,
+                    structuring_errors=downstream_structured.errors,
+                    structuring_warnings=downstream_structured.warnings,
+                    structurer_raw_response=downstream_structured.structurer_raw_response,
+                ),
                 judge_client=judge_client,
             ),
         }

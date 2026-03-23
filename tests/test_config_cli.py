@@ -25,6 +25,7 @@ enable_oracle_track = true
 
 [judge]
 backend = "openai"
+prompt_path = "../prompts/judge_v1.md"
 base_url = "http://judge.example/v1"
 api_key_env = "CUSTOM_JUDGE_KEY"
 model = "judge-model"
@@ -36,6 +37,21 @@ n = 2
 seed = 7
 invalid_json_retries = 3
 concurrency = 2
+
+[structurer]
+backend = "openai"
+prompt_root = "../prompts/structurer_v1"
+base_url = "http://structurer.example/v1"
+api_key_env = "CUSTOM_STRUCTURER_KEY"
+model = "structurer-model"
+temperature = 0.1
+top_p = 0.9
+top_k = 3
+max_tokens = 768
+n = 1
+seed = 17
+invalid_json_retries = 4
+concurrency = 5
 """.strip(),
         encoding="utf-8",
     )
@@ -52,6 +68,7 @@ concurrency = 2
     assert config.chain_manifest == (tmp_path / "artifacts" / "chain_pairs.jsonl").resolve()
     assert config.enable_oracle_track is True
     assert config.judge.backend == "openai"
+    assert config.judge.prompt_path == (tmp_path / "prompts" / "judge_v1.md").resolve()
     assert config.judge.base_url == "http://judge.example/v1"
     assert config.judge.api_key_env == "CUSTOM_JUDGE_KEY"
     assert config.judge.model == "judge-model"
@@ -63,6 +80,19 @@ concurrency = 2
     assert config.judge.seed == 7
     assert config.judge.invalid_json_retries == 3
     assert config.judge.concurrency == 2
+    assert config.structurer.backend == "openai"
+    assert config.structurer.prompt_root == (tmp_path / "prompts" / "structurer_v1").resolve()
+    assert config.structurer.base_url == "http://structurer.example/v1"
+    assert config.structurer.api_key_env == "CUSTOM_STRUCTURER_KEY"
+    assert config.structurer.model == "structurer-model"
+    assert config.structurer.temperature == 0.1
+    assert config.structurer.top_p == 0.9
+    assert config.structurer.top_k == 3
+    assert config.structurer.max_tokens == 768
+    assert config.structurer.n == 1
+    assert config.structurer.seed == 17
+    assert config.structurer.invalid_json_retries == 4
+    assert config.structurer.concurrency == 5
 
 
 def test_load_run_eval_config_requires_adapter(tmp_path):
@@ -72,6 +102,14 @@ def test_load_run_eval_config_requires_adapter(tmp_path):
 [run_eval]
 prepared_root = "prepared_data"
 protocol = "main"
+prompt_root = "prompts/benchmark_v1"
+
+[judge]
+prompt_path = "prompts/judge_v1.md"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
 """.strip(),
         encoding="utf-8",
     )
@@ -88,11 +126,62 @@ def test_load_run_eval_config_requires_prompt_root(tmp_path):
 prepared_root = "prepared_data"
 protocol = "main"
 adapter = "mock"
+
+[judge]
+prompt_path = "prompts/judge_v1.md"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
 """.strip(),
         encoding="utf-8",
     )
 
     with pytest.raises(ValueError, match=r"\[run_eval\]\.prompt_root is required"):
+        load_run_eval_config(config_path)
+
+
+def test_load_run_eval_config_requires_structurer_prompt_root(tmp_path):
+    config_path = tmp_path / "invalid.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+prompt_root = "prompts/benchmark_v1"
+adapter = "mock"
+
+[judge]
+prompt_path = "prompts/judge_v1.md"
+
+[structurer]
+backend = "static-parse"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[structurer\]\.prompt_root is required"):
+        load_run_eval_config(config_path)
+
+
+def test_load_run_eval_config_requires_judge_prompt_path(tmp_path):
+    config_path = tmp_path / "invalid.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+prompt_root = "prompts/benchmark_v1"
+adapter = "mock"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[judge\]\.prompt_path is required"):
         load_run_eval_config(config_path)
 
 

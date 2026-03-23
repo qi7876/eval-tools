@@ -13,10 +13,17 @@ from omnichain_eval.experiments import (
 from omnichain_eval.judge import StaticJudgeClient
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
 from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
+from omnichain_eval.schema import StructuredPredictionRecord
+from omnichain_eval.structurer import (
+    StaticParseStructurerBackend,
+    StructurerService,
+    load_structurer_prompt_pack,
+)
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mini_data"
 PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_v1"
+STRUCTURER_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
 
 
 def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
@@ -57,15 +64,32 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
 
     adapter = MockAdapter()
     prompt_pack = load_prompt_pack(PROMPT_ROOT)
-    prediction_map = {
-        sample.sample_id: adapter.predict(
-            build_model_input(sample, render_prompt(prompt_pack, sample))
-        )
-        for sample in main_samples
-    }
+    structurer_service = StructurerService(
+        backend=StaticParseStructurerBackend(),
+        prompt_pack=load_structurer_prompt_pack(STRUCTURER_PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+    structured_prediction_map = {}
+    for sample in main_samples:
+        raw_output = adapter.predict(build_model_input(sample, render_prompt(prompt_pack, sample)))
+        structured_result = structurer_service.structure(sample, raw_output)
+        structured_prediction_map[sample.sample_id] = {
+            "sample_id": sample.sample_id,
+            "task_name": sample.task_name,
+            "video_key": sample.video_key,
+            "protocol_id": sample.protocol_id,
+            "raw_output": structured_result.raw_output,
+            "structured_prediction": structured_result.structured_prediction,
+            "structuring_errors": structured_result.errors,
+            "structuring_warnings": structured_result.warnings,
+            "structurer_raw_response": structured_result.structurer_raw_response,
+        }
     evaluation = evaluate_prepared_predictions(
         main_samples,
-        prediction_map,
+        {
+            sample_id: StructuredPredictionRecord.from_dict(payload)
+            for sample_id, payload in structured_prediction_map.items()
+        },
         model_name="mock",
         judge_client=StaticJudgeClient(always_pass=True),
         commentary_supported=True,

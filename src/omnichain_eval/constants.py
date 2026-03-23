@@ -89,28 +89,19 @@ STG_UPSTREAM_TASKS = {
     TASK_STG,
 }
 
-JUDGE_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
-JUDGE_SYSTEM_PROMPT = """You are an evaluator for a video understanding benchmark.
+STRUCTURER_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
+STRUCTURER_SYSTEM_PROMPT = """You are a structured extraction assistant for a video understanding benchmark.
 
-Your job is to judge whether the model prediction is acceptable given:
-1. the task definition,
-2. the question,
-3. the reference answer,
-4. the model prediction.
-
-Rubric:
-- Correctness: Is the prediction factually consistent with the reference?
-- Completeness: Does it answer the core question sufficiently?
-- Faithfulness: Does it avoid unsupported details or contradictions?
+Your job is to convert a model's raw answer into the benchmark's canonical JSON format.
 
 Important:
-- Minor wording differences are allowed.
-- Paraphrases are allowed.
-- If the prediction misses a key entity, relation, direction, cause, or outcome, it should fail.
-- Do not reward verbosity.
+- Use only information present in the raw model output.
+- Do not infer missing coordinates, intervals, or tracking rows.
+- If a field is missing, leave it empty using the task's canonical empty value.
 - Return JSON only.
 """
 
+JUDGE_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
 JUDGE_JSON_KEYS = {
     "correctness",
     "completeness",
@@ -121,4 +112,3 @@ JUDGE_JSON_KEYS = {
 }
 
 BERTSCORE_MODEL = "microsoft/deberta-xlarge-mnli"
-

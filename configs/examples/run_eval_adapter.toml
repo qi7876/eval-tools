@@ -13,5 +13,12 @@ commentary_unsupported = false
 
 [judge]
 backend = "static-pass"
+prompt_path = "../../prompts/judge_v1.md"
+invalid_json_retries = 1
+concurrency = 1
+
+[structurer]
+backend = "static-parse"
+prompt_root = "../../prompts/structurer_v1"
 invalid_json_retries = 1
 concurrency = 1

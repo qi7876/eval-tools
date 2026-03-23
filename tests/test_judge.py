@@ -1,9 +1,13 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from omnichain_eval.judge import OpenAIJudgeClient, JudgeResponseFormatExhaustedError
+
+
+JUDGE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1.md"
 
 
 def _completion(*responses: str):
@@ -51,6 +55,7 @@ def test_openai_judge_retries_invalid_json_before_accepting_valid_response(monke
     judge_client = OpenAIJudgeClient(
         base_url="http://judge.example/v1",
         api_key="dummy",
+        prompt_path=JUDGE_PROMPT_PATH,
         invalid_json_retries=1,
     )
 
@@ -103,6 +108,7 @@ def test_openai_judge_retries_schema_errors(monkeypatch):
     judge_client = OpenAIJudgeClient(
         base_url="http://judge.example/v1",
         api_key="dummy",
+        prompt_path=JUDGE_PROMPT_PATH,
         invalid_json_retries=1,
     )
 
@@ -143,6 +149,7 @@ def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
     judge_client = OpenAIJudgeClient(
         base_url="http://judge.example/v1",
         api_key="dummy",
+        prompt_path=JUDGE_PROMPT_PATH,
         invalid_json_retries=1,
     )
 

@@ -1,15 +1,11 @@
-"""Strict prompt template loading and rendering."""
+"""Strict model-input prompt loading and rendering."""
 
 from __future__ import annotations
 
 import json
-import re
-from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 from .constants import (
-    ALL_TASKS,
     TASK_AI_COACH,
     TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
@@ -23,10 +19,9 @@ from .constants import (
     TASK_TEMPORAL_CAUSAL,
 )
 from .schema import ModelInput, PreparedSample, PromptMessage, RenderedPrompt
+from .template_pack import TaskTemplate, TemplatePackError, load_task_template_pack, render_template_text
 
-_SECTION_NAMES = {"system", "user"}
-_VARIABLE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
-_ALLOWED_VARIABLES = {
+_ALLOWED_INFERENCE_VARIABLES = {
     "question",
     "task_name",
     "task_level",
@@ -37,91 +32,15 @@ _ALLOWED_VARIABLES = {
     "oracle_track_enabled",
 }
 
-
-class PromptTemplateError(ValueError):
-    """Raised when a prompt pack or prompt template is invalid."""
-
-
-@dataclass(slots=True)
-class PromptTemplate:
-    task_name: str
-    path: Path
-    system_template: str
-    user_template: str
+PromptTemplateError = TemplatePackError
+PromptTemplate = TaskTemplate
 
 
-def _parse_template_sections(path: Path, text: str) -> tuple[str, str]:
-    sections: dict[str, list[str]] = {}
-    current_section: str | None = None
-    for line in text.splitlines():
-        if line.startswith("# "):
-            section_name = line[2:].strip()
-            if section_name not in _SECTION_NAMES:
-                raise PromptTemplateError(
-                    f"{path}: unsupported top-level section {section_name!r}; "
-                    "expected exactly '# system' and '# user'"
-                )
-            if section_name in sections:
-                raise PromptTemplateError(f"{path}: duplicate section '# {section_name}'")
-            current_section = section_name
-            sections[current_section] = []
-            continue
-        if current_section is None:
-            if line.strip():
-                raise PromptTemplateError(
-                    f"{path}: content appeared before the first top-level section"
-                )
-            continue
-        sections[current_section].append(line)
-
-    if set(sections) != _SECTION_NAMES:
-        missing = sorted(_SECTION_NAMES - set(sections))
-        raise PromptTemplateError(f"{path}: missing required section(s): {', '.join(missing)}")
-
-    system_template = "\n".join(sections["system"]).strip()
-    user_template = "\n".join(sections["user"]).strip()
-    if not user_template:
-        raise PromptTemplateError(f"{path}: '# user' section must not be empty")
-    return system_template, user_template
-
-
-def _validate_template_variables(path: Path, template_text: str) -> None:
-    variables = set(_VARIABLE_PATTERN.findall(template_text))
-    unknown = sorted(variables - _ALLOWED_VARIABLES)
-    if unknown:
-        raise PromptTemplateError(
-            f"{path}: unsupported variable(s): {', '.join(unknown)}"
-        )
-
-
-def _load_prompt_template(task_name: str, path: Path) -> PromptTemplate:
-    if not path.exists():
-        raise PromptTemplateError(f"missing prompt template: {path}")
-    text = path.read_text(encoding="utf-8")
-    system_template, user_template = _parse_template_sections(path, text)
-    _validate_template_variables(path, system_template)
-    _validate_template_variables(path, user_template)
-    return PromptTemplate(
-        task_name=task_name,
-        path=path,
-        system_template=system_template,
-        user_template=user_template,
+def load_prompt_pack(prompt_root):
+    return load_task_template_pack(
+        prompt_root,
+        allowed_variables=_ALLOWED_INFERENCE_VARIABLES,
     )
-
-
-def load_prompt_pack(prompt_root: Path) -> dict[str, PromptTemplate]:
-    if not prompt_root.exists():
-        raise PromptTemplateError(f"prompt_root does not exist: {prompt_root}")
-    if not prompt_root.is_dir():
-        raise PromptTemplateError(f"prompt_root is not a directory: {prompt_root}")
-
-    prompt_pack: dict[str, PromptTemplate] = {}
-    for task_name in sorted(ALL_TASKS):
-        prompt_pack[task_name] = _load_prompt_template(
-            task_name,
-            prompt_root / f"{task_name}.md",
-        )
-    return prompt_pack
 
 
 def _output_contract(task_name: str) -> str:
@@ -165,17 +84,6 @@ def _sampled_index_range(sample: PreparedSample) -> str:
     return f"0..{len(sample.sampled_frames_original) - 1}"
 
 
-def _render_template_text(template_text: str, variables: dict[str, object], path: Path) -> str:
-    def replace(match: re.Match[str]) -> str:
-        variable_name = match.group(1)
-        if variable_name not in variables:
-            raise PromptTemplateError(f"{path}: missing render variable {variable_name!r}")
-        value = variables[variable_name]
-        return str(value)
-
-    return _VARIABLE_PATTERN.sub(replace, template_text).strip()
-
-
 def render_prompt(
     prompt_pack: dict[str, PromptTemplate],
     sample: PreparedSample,
@@ -197,8 +105,8 @@ def render_prompt(
         "output_contract": _output_contract(sample.task_name),
         "oracle_track_enabled": str(oracle_track).lower(),
     }
-    system_prompt = _render_template_text(template.system_template, variables, template.path)
-    user_prompt = _render_template_text(template.user_template, variables, template.path)
+    system_prompt = render_template_text(template.system_template, variables, template.path)
+    user_prompt = render_template_text(template.user_template, variables, template.path)
     return RenderedPrompt(
         task_name=sample.task_name,
         template_path=str(template.path),
@@ -223,8 +131,6 @@ def build_model_input(
     messages.append(PromptMessage(role="user", content=rendered_prompt.user_prompt))
     return ModelInput(
         sample=sample,
-        task_name=sample.task_name,
-        frame_files=list(sample.frame_files),
         messages=messages,
         oracle_track=oracle_track,
     )

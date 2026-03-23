@@ -24,8 +24,13 @@ from .constants import (
     TRACKING_THRESHOLD,
 )
 from .judge import JudgeClient, default_judge_fail
-from .normalize import normalize_prediction
-from .schema import EvaluationRecord, JudgeDecision, PreparedSample, TaskSummary
+from .schema import (
+    EvaluationRecord,
+    JudgeDecision,
+    PreparedSample,
+    StructuredPredictionRecord,
+    TaskSummary,
+)
 
 
 def bbox_iou(box_pred: list[float], box_gt: list[float]) -> float:
@@ -82,23 +87,23 @@ def _judge_reference_payload(task_name: str, reference_payload: dict[str, Any]) 
 
 def _judge_prediction_payload(
     task_name: str,
-    normalized_prediction: dict[str, Any],
+    structured_prediction: dict[str, Any],
     *,
     predicted_segments_original: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
-        return {"text": normalized_prediction["text"]}
+        return {"text": structured_prediction["text"]}
     if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
         return {"prediction_segments": predicted_segments_original or []}
     raise ValueError(f"unsupported judge prediction payload for {task_name}")
 
 
 def _map_segments_to_original(
-    normalized_prediction: dict[str, Any],
+    structured_prediction: dict[str, Any],
     prepared_sample: PreparedSample,
 ) -> tuple[list[dict[str, Any]] | None, list[str]]:
     errors: list[str] = []
-    segments = normalized_prediction.get("segments")
+    segments = structured_prediction.get("segments")
     if not isinstance(segments, list):
         return None, ["missing segments"]
     mapped: list[dict[str, Any]] = []
@@ -124,12 +129,12 @@ def _map_segments_to_original(
 
 
 def _map_window_to_original(
-    normalized_prediction: dict[str, Any],
+    structured_prediction: dict[str, Any],
     prepared_sample: PreparedSample,
 ) -> tuple[list[int] | None, list[str]]:
     errors: list[str] = []
-    window = normalized_prediction.get("time_window_sampled")
-    if not isinstance(window, list) or len(window) != 2:
+    window = structured_prediction.get("time_window_sampled")
+    if not isinstance(window, list) or len(window) != 2 or len(window) == 0:
         return None, ["missing time_window_sampled"]
     start = int(window[0])
     end = int(window[1])
@@ -162,10 +167,10 @@ def _collapse_tracking(
 
 
 def _evaluate_tracking(
-    normalized_prediction: dict[str, Any],
+    structured_prediction: dict[str, Any],
     gt_rows: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], dict[str, Any], list[str]]:
-    predicted_rows = normalized_prediction.get("tracking", [])
+    predicted_rows = structured_prediction.get("tracking", [])
     predicted_by_frame, warnings = _collapse_tracking(predicted_rows)
     if not gt_rows:
         return (
@@ -200,13 +205,13 @@ def _linearize_segments(segments: list[dict[str, Any]]) -> str:
 def _bertscore_pair(
     task_name: str,
     reference_payload: dict[str, Any],
-    normalized_prediction: dict[str, Any] | None,
+    structured_prediction: dict[str, Any] | None,
     predicted_segments_original: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, str | None]:
-    if normalized_prediction is None:
+    if structured_prediction is None:
         return None, None
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
-        return reference_payload["text"], normalized_prediction["text"]
+        return reference_payload["text"], structured_prediction["text"]
     if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
         return (
             _linearize_segments(reference_payload["segments_original"]),
@@ -218,16 +223,19 @@ def _bertscore_pair(
 def _judge_textual_task(
     task_name: str,
     prepared_sample: PreparedSample,
-    normalized_prediction: dict[str, Any] | None,
+    structured_prediction: dict[str, Any] | None,
     judge_client: JudgeClient | None,
     predicted_segments_original: list[dict[str, Any]] | None = None,
 ) -> tuple[JudgeDecision, int]:
-    if normalized_prediction is None or judge_client is None:
-        return default_judge_fail("missing normalized prediction or judge backend"), 0
+    if structured_prediction is None or judge_client is None:
+        return default_judge_fail("missing structured prediction or judge backend"), 0
+    if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
+        if not str(structured_prediction.get("text", "")).strip():
+            return default_judge_fail("missing structured text prediction"), 0
     reference_payload = _judge_reference_payload(task_name, prepared_sample.reference_payload)
     prediction_payload = _judge_prediction_payload(
         task_name,
-        normalized_prediction,
+        structured_prediction,
         predicted_segments_original=predicted_segments_original,
     )
     decision = judge_client.judge(
@@ -251,22 +259,22 @@ def _judge_textual_task(
 
 def evaluate_sample(
     prepared_sample: PreparedSample,
-    raw_output: Any,
+    structured_record: StructuredPredictionRecord,
     *,
     judge_client: JudgeClient | None,
     override_tracking_with_gt: bool = False,
 ) -> EvaluationRecord:
-    normalization = normalize_prediction(prepared_sample.task_name, raw_output)
-    normalized = normalization.normalized_prediction
+    structured = structured_record.structured_prediction
     metrics: dict[str, Any] = {}
     component_pass: dict[str, Any] = {}
     judge_decision: JudgeDecision | None = None
-    warnings = list(normalization.warnings)
+    warnings = list(structured_record.structuring_warnings)
+    structuring_errors = list(structured_record.structuring_errors)
     predicted_segments_original: list[dict[str, Any]] | None = None
 
     if prepared_sample.task_name == TASK_SCOREBOARD_SINGLE:
-        if normalized and normalized.get("bbox"):
-            iou = bbox_iou(normalized["bbox"], prepared_sample.reference_payload["bbox"])
+        if structured and len(structured.get("bbox", [])) == 4:
+            iou = bbox_iou(structured["bbox"], prepared_sample.reference_payload["bbox"])
         else:
             iou = 0.0
         metrics["bbox_iou"] = iou
@@ -274,19 +282,19 @@ def evaluate_sample(
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            normalized,
+            structured,
             judge_client,
         )
         component_pass["judge_pass"] = judge_pass
         task_pass = int(component_pass["bbox_pass"] and judge_pass)
     elif prepared_sample.task_name == TASK_OBJECTS_SPATIAL:
-        if normalized:
+        if structured and len(structured.get("bbox_a", [])) == 4 and len(structured.get("bbox_b", [])) == 4:
             bbox_a_iou = bbox_iou(
-                normalized["bbox_a"],
+                structured["bbox_a"],
                 prepared_sample.reference_payload["bbox_a"],
             )
             bbox_b_iou = bbox_iou(
-                normalized["bbox_b"],
+                structured["bbox_b"],
                 prepared_sample.reference_payload["bbox_b"],
             )
         else:
@@ -299,7 +307,7 @@ def evaluate_sample(
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            normalized,
+            structured,
             judge_client,
         )
         component_pass["judge_pass"] = judge_pass
@@ -310,49 +318,49 @@ def evaluate_sample(
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            normalized,
+            structured,
             judge_client,
         )
         component_pass["judge_pass"] = judge_pass
         task_pass = judge_pass
     elif prepared_sample.task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
-        if normalized is not None:
+        if structured is not None:
             predicted_segments_original, segment_errors = _map_segments_to_original(
-                normalized,
+                structured,
                 prepared_sample,
             )
-            normalization.errors.extend(segment_errors)
+            structuring_errors.extend(segment_errors)
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            normalized if predicted_segments_original is not None else None,
+            structured if predicted_segments_original is not None else None,
             judge_client,
             predicted_segments_original=predicted_segments_original,
         )
         component_pass["judge_pass"] = judge_pass
         task_pass = judge_pass
     elif prepared_sample.task_name == TASK_CONTINUOUS_ACTIONS:
-        if normalized is not None and override_tracking_with_gt:
-            normalized = dict(normalized)
-            normalized["tracking"] = list(
+        if structured is not None and override_tracking_with_gt:
+            structured = dict(structured)
+            structured["tracking"] = list(
                 prepared_sample.reference_payload.get("tracking_gt_sampled", [])
             )
-        if normalized is not None:
+        if structured is not None:
             predicted_segments_original, segment_errors = _map_segments_to_original(
-                normalized,
+                structured,
                 prepared_sample,
             )
-            normalization.errors.extend(segment_errors)
+            structuring_errors.extend(segment_errors)
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            normalized if predicted_segments_original is not None else None,
+            structured if predicted_segments_original is not None else None,
             judge_client,
             predicted_segments_original=predicted_segments_original,
         )
         component_pass["judge_pass"] = judge_pass
         tracking_metrics, tracking_pass, tracking_warnings = _evaluate_tracking(
-            normalized or {},
+            structured or {},
             prepared_sample.reference_payload.get("tracking_gt_sampled", []),
         )
         metrics.update(tracking_metrics)
@@ -360,18 +368,18 @@ def evaluate_sample(
         warnings.extend(tracking_warnings)
         task_pass = int(judge_pass and component_pass["tracking_pass"])
     elif prepared_sample.task_name == TASK_STG:
-        if normalized is not None and override_tracking_with_gt:
-            normalized = dict(normalized)
-            normalized["tracking"] = list(
+        if structured is not None and override_tracking_with_gt:
+            structured = dict(structured)
+            structured["tracking"] = list(
                 prepared_sample.reference_payload.get("tracking_gt_sampled", [])
             )
         predicted_original_window = None
-        if normalized is not None:
+        if structured is not None:
             predicted_original_window, window_errors = _map_window_to_original(
-                normalized,
+                structured,
                 prepared_sample,
             )
-            normalization.errors.extend(window_errors)
+            structuring_errors.extend(window_errors)
         if predicted_original_window is None:
             tiou = 0.0
         else:
@@ -382,7 +390,7 @@ def evaluate_sample(
         metrics["tiou"] = tiou
         component_pass["tiou_pass"] = int(tiou >= TIOU_THRESHOLD)
         tracking_metrics, tracking_pass, tracking_warnings = _evaluate_tracking(
-            normalized or {},
+            structured or {},
             prepared_sample.reference_payload.get("tracking_gt_sampled", []),
         )
         metrics.update(tracking_metrics)
@@ -395,7 +403,7 @@ def evaluate_sample(
     reference_text, prediction_text = _bertscore_pair(
         prepared_sample.task_name,
         prepared_sample.reference_payload,
-        normalized,
+        structured,
         predicted_segments_original,
     )
 
@@ -404,14 +412,14 @@ def evaluate_sample(
         task_name=prepared_sample.task_name,
         video_key=prepared_sample.video_key,
         protocol_id=prepared_sample.protocol_id,
-        normalized_prediction=normalized,
-        normalization_errors=normalization.errors,
-        normalization_warnings=warnings,
+        structured_prediction=structured,
+        structuring_errors=structuring_errors,
+        structuring_warnings=warnings,
         component_metrics=metrics,
         component_pass=component_pass,
         task_pass=task_pass,
         judge_decision=judge_decision.to_dict() if isinstance(judge_decision, JudgeDecision) else judge_decision,
-        raw_output=raw_output,
+        raw_output=structured_record.raw_output,
         bertscore_candidate=prediction_text,
         bertscore_reference=reference_text,
     )

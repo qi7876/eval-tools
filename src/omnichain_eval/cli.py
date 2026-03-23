@@ -12,6 +12,7 @@ from typing import Any
 from .adapters import resolve_adapter
 from .config import (
     JudgeConfig,
+    StructurerConfig,
     load_build_chain_manifest_config,
     load_prepare_data_config,
     load_run_eval_config,
@@ -37,13 +38,36 @@ from .prompting import (
     render_prompt,
 )
 from .prepare import build_prepared_data
-from .schema import ChainPairRecord, EvaluationRecord, PreparedSample, RenderedPrompt
+from .schema import (
+    ChainPairRecord,
+    EvaluationRecord,
+    PreparedSample,
+    RenderedPrompt,
+    StructuredPredictionRecord,
+)
+from .structurer import (
+    OpenAIStructurerBackend,
+    StaticParseStructurerBackend,
+    StructurerResponseFormatExhaustedError,
+    StructurerService,
+    load_structurer_prompt_pack,
+)
 from .utils import append_jsonl, ensure_directory, read_jsonl, write_json, write_jsonl
 
 
 @dataclass(slots=True)
+class PendingStructuringTask:
+    sample: PreparedSample
+    channel: str
+    future: Future[StructuredPredictionRecord]
+    pair_id: str | None = None
+    upstream_sample_id: str | None = None
+    downstream_sample_id: str | None = None
+
+
+@dataclass(slots=True)
 class PendingEvaluationTask:
-    sample_id: str
+    sample: PreparedSample
     channel: str
     future: Future[EvaluationRecord]
     pair_id: str | None = None
@@ -66,6 +90,7 @@ def _judge_client_from_config(judge_config: JudgeConfig):
     return OpenAIJudgeClient(
         base_url=base_url,
         api_key=api_key,
+        prompt_path=judge_config.prompt_path,
         model=judge_config.model,
         temperature=judge_config.temperature,
         top_p=judge_config.top_p,
@@ -77,6 +102,36 @@ def _judge_client_from_config(judge_config: JudgeConfig):
     )
 
 
+def _structurer_service_from_config(structurer_config: StructurerConfig) -> StructurerService:
+    prompt_pack = load_structurer_prompt_pack(structurer_config.prompt_root)
+    if structurer_config.backend == "static-parse":
+        backend = StaticParseStructurerBackend()
+    else:
+        base_url = structurer_config.resolved_base_url()
+        api_key = structurer_config.resolved_api_key()
+        if not base_url or not api_key:
+            raise ValueError(
+                "structurer configuration is missing; set [structurer].base_url and provide "
+                "an API key via [structurer].api_key or [structurer].api_key_env"
+            )
+        backend = OpenAIStructurerBackend(
+            base_url=base_url,
+            api_key=api_key,
+            model=structurer_config.model,
+            temperature=structurer_config.temperature,
+            top_p=structurer_config.top_p,
+            top_k=structurer_config.top_k,
+            max_tokens=structurer_config.max_tokens,
+            n=structurer_config.n,
+            seed=structurer_config.seed,
+        )
+    return StructurerService(
+        backend=backend,
+        prompt_pack=prompt_pack,
+        invalid_json_retries=structurer_config.invalid_json_retries,
+    )
+
+
 def _load_existing_evaluation_records(path: Path) -> dict[str, EvaluationRecord]:
     if not path.exists():
         return {}
@@ -84,14 +139,66 @@ def _load_existing_evaluation_records(path: Path) -> dict[str, EvaluationRecord]
     for row in read_jsonl(path):
         if row.get("task_pass") is None:
             continue
-        records[row["sample_id"]] = EvaluationRecord.from_dict(row)
+        record = EvaluationRecord.from_dict(row)
+        records[record.sample_id] = record
     return records
 
 
-def _load_existing_prediction_artifacts(path: Path) -> dict[str, Any]:
+def _load_existing_prediction_artifacts(path: Path) -> dict[str, str]:
     if not path.exists():
         return {}
-    return {row["sample_id"]: row.get("raw_output") for row in read_jsonl(path)}
+    rows: dict[str, str] = {}
+    for row in read_jsonl(path):
+        raw_output = row.get("raw_output")
+        if raw_output is None:
+            continue
+        rows[row["sample_id"]] = str(raw_output)
+    return rows
+
+
+def _load_existing_structured_records(path: Path) -> dict[str, StructuredPredictionRecord]:
+    if not path.exists():
+        return {}
+    records: dict[str, StructuredPredictionRecord] = {}
+    for row in read_jsonl(path):
+        if row.get("structured_prediction") is None:
+            continue
+        record = StructuredPredictionRecord.from_dict(row)
+        records[record.sample_id] = record
+    return records
+
+
+def _structured_record_from_evaluation(record: EvaluationRecord) -> StructuredPredictionRecord | None:
+    if record.structured_prediction is None or record.raw_output is None:
+        return None
+    return StructuredPredictionRecord(
+        sample_id=record.sample_id,
+        task_name=record.task_name,
+        video_key=record.video_key,
+        protocol_id=record.protocol_id,
+        raw_output=record.raw_output,
+        structured_prediction=record.structured_prediction,
+        structuring_errors=list(record.structuring_errors),
+        structuring_warnings=list(record.structuring_warnings),
+    )
+
+
+def _backfill_prediction_and_structuring_state(
+    *,
+    prediction_map: dict[str, str],
+    structured_map: dict[str, StructuredPredictionRecord],
+    result_map: dict[str, EvaluationRecord],
+) -> None:
+    for sample_id, structured_record in structured_map.items():
+        prediction_map.setdefault(sample_id, structured_record.raw_output)
+    for sample_id, result_record in result_map.items():
+        if result_record.raw_output is not None:
+            prediction_map.setdefault(sample_id, result_record.raw_output)
+        if sample_id in structured_map:
+            continue
+        structured_record = _structured_record_from_evaluation(result_record)
+        if structured_record is not None:
+            structured_map[sample_id] = structured_record
 
 
 def _load_existing_oracle_pair_results(path: Path) -> dict[str, dict[str, EvaluationRecord]]:
@@ -110,7 +217,7 @@ def _load_existing_oracle_pair_results(path: Path) -> dict[str, dict[str, Evalua
     return pair_results
 
 
-def _append_prediction_artifact(path: Path, sample_id: str, raw_output: Any, protocol_id: str) -> None:
+def _append_prediction_artifact(path: Path, sample_id: str, raw_output: str, protocol_id: str) -> None:
     append_jsonl(
         path,
         [
@@ -126,7 +233,7 @@ def _append_prediction_artifact(path: Path, sample_id: str, raw_output: Any, pro
 def _append_chain_prediction_artifact(
     path: Path,
     pair: ChainPairRecord,
-    raw_output: Any,
+    raw_output: str,
     protocol_id: str,
 ) -> None:
     append_jsonl(
@@ -142,6 +249,10 @@ def _append_chain_prediction_artifact(
             }
         ],
     )
+
+
+def _append_structured_artifact(path: Path, record: StructuredPredictionRecord) -> None:
+    append_jsonl(path, [record.to_dict()])
 
 
 def _append_result(path: Path, record: EvaluationRecord, extra: dict[str, Any] | None = None) -> None:
@@ -191,16 +302,40 @@ def _default_run_name(model_name: str, protocol_id: str) -> str:
     return f"{timestamp}_{model_name}_{protocol_id}"
 
 
+def _structure_sample(
+    structurer_service: StructurerService,
+    sample: PreparedSample,
+    raw_output: str,
+    *,
+    pair: ChainPairRecord | None = None,
+) -> StructuredPredictionRecord:
+    result = structurer_service.structure(sample, raw_output)
+    return StructuredPredictionRecord(
+        sample_id=sample.sample_id,
+        task_name=sample.task_name,
+        video_key=sample.video_key,
+        protocol_id=sample.protocol_id,
+        raw_output=result.raw_output,
+        structured_prediction=result.structured_prediction,
+        structuring_errors=list(result.errors),
+        structuring_warnings=list(result.warnings),
+        structurer_raw_response=result.structurer_raw_response,
+        pair_id=pair.pair_id if pair else None,
+        upstream_sample_id=pair.upstream_sample_id if pair else None,
+        downstream_sample_id=pair.downstream_sample_id if pair else None,
+    )
+
+
 def _evaluate_with_judge_client(
     judge_client: Any,
     sample: PreparedSample,
-    raw_output: Any,
+    structured_record: StructuredPredictionRecord,
     *,
     override_tracking_with_gt: bool = False,
 ) -> EvaluationRecord:
     return evaluate_sample(
         sample,
-        raw_output,
+        structured_record,
         judge_client=judge_client,
         override_tracking_with_gt=override_tracking_with_gt,
     )
@@ -312,6 +447,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     prepared_samples = load_prepared_for_protocol(config.prepared_root, config.protocol)
     prepared_by_sample_id = {sample.sample_id: sample for sample in prepared_samples}
     prompt_pack = load_prompt_pack(config.prompt_root)
+    structurer_service = _structurer_service_from_config(config.structurer)
 
     adapter = resolve_adapter(config.adapter)
     commentary_supported = adapter.supports_commentary()
@@ -342,26 +478,35 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         artifacts_root / (config.run_name or _default_run_name(model_name, config.protocol))
     )
     predictions_path = run_dir / "predictions.jsonl"
+    structured_predictions_path = run_dir / "structured_predictions.jsonl"
     results_path = run_dir / "results.jsonl"
     chain_predictions_path = run_dir / "chain_predictions.jsonl"
+    chain_structured_predictions_path = run_dir / "chain_structured_predictions.jsonl"
     chain_results_path = run_dir / "chain_results.jsonl"
     summary_path = run_dir / "summary.json"
     oracle_pair_results_path = run_dir / "oracle_pair_results.jsonl"
 
     normal_results_by_sample_id = _load_existing_evaluation_records(results_path)
     chain_results_by_sample_id = _load_existing_evaluation_records(chain_results_path)
-    existing_records_by_sample_id = {**normal_results_by_sample_id, **chain_results_by_sample_id}
-
+    normal_structured_by_sample_id = _load_existing_structured_records(structured_predictions_path)
+    chain_structured_by_sample_id = _load_existing_structured_records(
+        chain_structured_predictions_path
+    )
     normal_prediction_map = _load_existing_prediction_artifacts(predictions_path)
-    for sample_id, record in normal_results_by_sample_id.items():
-        if sample_id not in normal_prediction_map:
-            normal_prediction_map[sample_id] = record.raw_output
-
     chain_prediction_map = _load_existing_prediction_artifacts(chain_predictions_path)
-    for sample_id, record in chain_results_by_sample_id.items():
-        if sample_id not in chain_prediction_map:
-            chain_prediction_map[sample_id] = record.raw_output
 
+    _backfill_prediction_and_structuring_state(
+        prediction_map=normal_prediction_map,
+        structured_map=normal_structured_by_sample_id,
+        result_map=normal_results_by_sample_id,
+    )
+    _backfill_prediction_and_structuring_state(
+        prediction_map=chain_prediction_map,
+        structured_map=chain_structured_by_sample_id,
+        result_map=chain_results_by_sample_id,
+    )
+
+    existing_records_by_sample_id = {**normal_results_by_sample_id, **chain_results_by_sample_id}
     completed_before_run = len(
         [sample_id for sample_id in existing_records_by_sample_id if sample_id in target_sample_ids]
     )
@@ -371,100 +516,197 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     judge_client = _judge_client_from_config(config.judge)
 
     prediction_errors_this_run: list[dict[str, str]] = []
+    structuring_errors_this_run: list[dict[str, str]] = []
     evaluation_errors_this_run: list[dict[str, str]] = []
     chain_prediction_errors_this_run: list[dict[str, str]] = []
+    chain_structuring_errors_this_run: list[dict[str, str]] = []
     chain_evaluation_errors_this_run: list[dict[str, str]] = []
     blocked_chain_sample_ids: list[str] = []
+    structured_normal_sample_ids_this_run: list[str] = []
+    structured_chain_sample_ids_this_run: list[str] = []
     completed_normal_sample_ids_this_run: list[str] = []
     completed_chain_sample_ids_this_run: list[str] = []
 
-    def submit_evaluation(
-        executor: ThreadPoolExecutor,
-        *,
-        sample: PreparedSample,
-        raw_output: Any,
-        channel: str,
-        pair: ChainPairRecord | None = None,
-    ) -> PendingEvaluationTask:
-        future = executor.submit(
-            _evaluate_with_judge_client,
-            judge_client,
-            sample,
-            raw_output,
-        )
-        return PendingEvaluationTask(
-            sample_id=sample.sample_id,
-            channel=channel,
-            future=future,
-            pair_id=pair.pair_id if pair else None,
-            upstream_sample_id=pair.upstream_sample_id if pair else None,
-            downstream_sample_id=pair.downstream_sample_id if pair else None,
-        )
-
-    def handle_completed_task(task: PendingEvaluationTask) -> None:
-        try:
-            record = task.future.result()
-        except Exception as exc:  # noqa: BLE001
-            target_errors = (
-                chain_evaluation_errors_this_run
-                if task.channel == "chain"
-                else evaluation_errors_this_run
-            )
-            target_errors.append(
-                _error_summary(
-                    sample_id=task.sample_id,
-                    stage=(
-                        "judge"
-                        if isinstance(exc, JudgeResponseFormatExhaustedError)
-                        else "evaluation"
-                    ),
-                    exc=exc,
-                    pair_id=task.pair_id,
-                )
-            )
-            return
-
-        existing_records_by_sample_id[task.sample_id] = record
-        if task.channel == "chain":
-            chain_results_by_sample_id[task.sample_id] = record
-            completed_chain_sample_ids_this_run.append(task.sample_id)
-            _append_result(
-                chain_results_path,
-                record,
-                extra={
-                    "pair_id": task.pair_id,
-                    "upstream_sample_id": task.upstream_sample_id,
-                    "downstream_sample_id": task.downstream_sample_id,
-                },
-            )
-        else:
-            normal_results_by_sample_id[task.sample_id] = record
-            completed_normal_sample_ids_this_run.append(task.sample_id)
-            _append_result(results_path, record)
-
-    def drain_completed_tasks(pending_tasks: dict[str, PendingEvaluationTask], *, wait_all: bool) -> None:
-        if wait_all:
-            sample_ids = list(pending_tasks)
-        else:
-            sample_ids = [
-                sample_id
-                for sample_id, task in pending_tasks.items()
-                if task.future.done()
-            ]
-        for sample_id in sample_ids:
-            task = pending_tasks.pop(sample_id)
-            handle_completed_task(task)
-
     with ThreadPoolExecutor(
+        max_workers=config.structurer.concurrency,
+        thread_name_prefix="omnichain-structurer",
+    ) as structurer_executor, ThreadPoolExecutor(
         max_workers=config.judge.concurrency,
         thread_name_prefix="omnichain-judge",
-    ) as executor:
-        pending_tasks: dict[str, PendingEvaluationTask] = {}
+    ) as judge_executor:
+        pending_structuring_tasks: dict[str, PendingStructuringTask] = {}
+        pending_evaluation_tasks: dict[str, PendingEvaluationTask] = {}
+
+        def submit_structuring(
+            *,
+            sample: PreparedSample,
+            raw_output: str,
+            channel: str,
+            pair: ChainPairRecord | None = None,
+        ) -> PendingStructuringTask:
+            future = structurer_executor.submit(
+                _structure_sample,
+                structurer_service,
+                sample,
+                raw_output,
+                pair=pair,
+            )
+            return PendingStructuringTask(
+                sample=sample,
+                channel=channel,
+                future=future,
+                pair_id=pair.pair_id if pair else None,
+                upstream_sample_id=pair.upstream_sample_id if pair else None,
+                downstream_sample_id=pair.downstream_sample_id if pair else None,
+            )
+
+        def submit_evaluation(
+            *,
+            sample: PreparedSample,
+            structured_record: StructuredPredictionRecord,
+            channel: str,
+            pair: ChainPairRecord | None = None,
+        ) -> PendingEvaluationTask:
+            future = judge_executor.submit(
+                _evaluate_with_judge_client,
+                judge_client,
+                sample,
+                structured_record,
+            )
+            return PendingEvaluationTask(
+                sample=sample,
+                channel=channel,
+                future=future,
+                pair_id=pair.pair_id if pair else None,
+                upstream_sample_id=pair.upstream_sample_id if pair else None,
+                downstream_sample_id=pair.downstream_sample_id if pair else None,
+            )
+
+        def handle_completed_structuring_task(task: PendingStructuringTask) -> None:
+            try:
+                record = task.future.result()
+            except Exception as exc:  # noqa: BLE001
+                target_errors = (
+                    chain_structuring_errors_this_run
+                    if task.channel == "chain"
+                    else structuring_errors_this_run
+                )
+                target_errors.append(
+                    _error_summary(
+                        sample_id=task.sample.sample_id,
+                        stage=(
+                            "structuring"
+                            if isinstance(exc, StructurerResponseFormatExhaustedError)
+                            else "structuring"
+                        ),
+                        exc=exc,
+                        pair_id=task.pair_id,
+                    )
+                )
+                return
+
+            if task.channel == "chain":
+                chain_structured_by_sample_id[task.sample.sample_id] = record
+                structured_chain_sample_ids_this_run.append(task.sample.sample_id)
+                _append_structured_artifact(chain_structured_predictions_path, record)
+            else:
+                normal_structured_by_sample_id[task.sample.sample_id] = record
+                structured_normal_sample_ids_this_run.append(task.sample.sample_id)
+                _append_structured_artifact(structured_predictions_path, record)
+
+            if task.sample.sample_id in existing_records_by_sample_id:
+                return
+            if task.sample.sample_id in pending_evaluation_tasks:
+                return
+            pending_evaluation_tasks[task.sample.sample_id] = submit_evaluation(
+                sample=task.sample,
+                structured_record=record,
+                channel=task.channel,
+                pair=(
+                    chain_pair_by_downstream_id[task.sample.sample_id]
+                    if task.channel == "chain"
+                    else None
+                ),
+            )
+
+        def handle_completed_evaluation_task(task: PendingEvaluationTask) -> None:
+            try:
+                record = task.future.result()
+            except Exception as exc:  # noqa: BLE001
+                target_errors = (
+                    chain_evaluation_errors_this_run
+                    if task.channel == "chain"
+                    else evaluation_errors_this_run
+                )
+                target_errors.append(
+                    _error_summary(
+                        sample_id=task.sample.sample_id,
+                        stage=(
+                            "judge"
+                            if isinstance(exc, JudgeResponseFormatExhaustedError)
+                            else "evaluation"
+                        ),
+                        exc=exc,
+                        pair_id=task.pair_id,
+                    )
+                )
+                return
+
+            existing_records_by_sample_id[task.sample.sample_id] = record
+            if task.channel == "chain":
+                chain_results_by_sample_id[task.sample.sample_id] = record
+                completed_chain_sample_ids_this_run.append(task.sample.sample_id)
+                _append_result(
+                    chain_results_path,
+                    record,
+                    extra={
+                        "pair_id": task.pair_id,
+                        "upstream_sample_id": task.upstream_sample_id,
+                        "downstream_sample_id": task.downstream_sample_id,
+                    },
+                )
+            else:
+                normal_results_by_sample_id[task.sample.sample_id] = record
+                completed_normal_sample_ids_this_run.append(task.sample.sample_id)
+                _append_result(results_path, record)
+
+        def drain_completed_structuring_tasks(*, wait_all: bool) -> None:
+            sample_ids = (
+                list(pending_structuring_tasks)
+                if wait_all
+                else [
+                    sample_id
+                    for sample_id, task in pending_structuring_tasks.items()
+                    if task.future.done()
+                ]
+            )
+            for sample_id in sample_ids:
+                task = pending_structuring_tasks.pop(sample_id)
+                handle_completed_structuring_task(task)
+
+        def drain_completed_evaluation_tasks(*, wait_all: bool) -> None:
+            sample_ids = (
+                list(pending_evaluation_tasks)
+                if wait_all
+                else [
+                    sample_id
+                    for sample_id, task in pending_evaluation_tasks.items()
+                    if task.future.done()
+                ]
+            )
+            for sample_id in sample_ids:
+                task = pending_evaluation_tasks.pop(sample_id)
+                handle_completed_evaluation_task(task)
+
+        def drain_pending(*, wait_all: bool) -> None:
+            drain_completed_structuring_tasks(wait_all=wait_all)
+            drain_completed_evaluation_tasks(wait_all=wait_all)
 
         for sample in normal_target_samples:
             if sample.sample_id in existing_records_by_sample_id:
-                drain_completed_tasks(pending_tasks, wait_all=False)
+                drain_pending(wait_all=False)
                 continue
+
             raw_output = normal_prediction_map.get(sample.sample_id)
             if raw_output is None:
                 try:
@@ -478,7 +720,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     prediction_errors_this_run.append(
                         _error_summary(sample_id=sample.sample_id, stage="prediction", exc=exc)
                     )
-                    drain_completed_tasks(pending_tasks, wait_all=False)
+                    drain_pending(wait_all=False)
                     continue
                 normal_prediction_map[sample.sample_id] = raw_output
                 _append_prediction_artifact(
@@ -487,27 +729,38 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     raw_output,
                     config.protocol,
                 )
-            if sample.sample_id not in pending_tasks:
-                pending_tasks[sample.sample_id] = submit_evaluation(
-                    executor,
+
+            if sample.sample_id in pending_evaluation_tasks:
+                drain_pending(wait_all=False)
+                continue
+
+            structured_record = normal_structured_by_sample_id.get(sample.sample_id)
+            if structured_record is not None:
+                pending_evaluation_tasks[sample.sample_id] = submit_evaluation(
+                    sample=sample,
+                    structured_record=structured_record,
+                    channel="normal",
+                )
+            elif sample.sample_id not in pending_structuring_tasks:
+                pending_structuring_tasks[sample.sample_id] = submit_structuring(
                     sample=sample,
                     raw_output=raw_output,
                     channel="normal",
                 )
-            drain_completed_tasks(pending_tasks, wait_all=False)
+            drain_pending(wait_all=False)
 
-        drain_completed_tasks(pending_tasks, wait_all=False)
+        drain_pending(wait_all=False)
 
         for pair in chain_pairs:
             downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
             if downstream_sample.sample_id in existing_records_by_sample_id:
-                drain_completed_tasks(pending_tasks, wait_all=False)
+                drain_pending(wait_all=False)
                 continue
 
             upstream_raw_output = normal_prediction_map.get(pair.upstream_sample_id)
             if upstream_raw_output is None:
                 blocked_chain_sample_ids.append(pair.downstream_sample_id)
-                drain_completed_tasks(pending_tasks, wait_all=False)
+                drain_pending(wait_all=False)
                 continue
 
             raw_output = chain_prediction_map.get(pair.downstream_sample_id)
@@ -532,7 +785,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                             pair_id=pair.pair_id,
                         )
                     )
-                    drain_completed_tasks(pending_tasks, wait_all=False)
+                    drain_pending(wait_all=False)
                     continue
                 chain_prediction_map[pair.downstream_sample_id] = raw_output
                 _append_chain_prediction_artifact(
@@ -542,17 +795,29 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     config.protocol,
                 )
 
-            if pair.downstream_sample_id not in pending_tasks:
-                pending_tasks[pair.downstream_sample_id] = submit_evaluation(
-                    executor,
+            if pair.downstream_sample_id in pending_evaluation_tasks:
+                drain_pending(wait_all=False)
+                continue
+
+            structured_record = chain_structured_by_sample_id.get(pair.downstream_sample_id)
+            if structured_record is not None:
+                pending_evaluation_tasks[pair.downstream_sample_id] = submit_evaluation(
+                    sample=downstream_sample,
+                    structured_record=structured_record,
+                    channel="chain",
+                    pair=pair,
+                )
+            elif pair.downstream_sample_id not in pending_structuring_tasks:
+                pending_structuring_tasks[pair.downstream_sample_id] = submit_structuring(
                     sample=downstream_sample,
                     raw_output=raw_output,
                     channel="chain",
                     pair=pair,
                 )
-            drain_completed_tasks(pending_tasks, wait_all=False)
+            drain_pending(wait_all=False)
 
-        drain_completed_tasks(pending_tasks, wait_all=True)
+        drain_completed_structuring_tasks(wait_all=True)
+        drain_completed_evaluation_tasks(wait_all=True)
 
     ordered_records = [
         existing_records_by_sample_id[sample.sample_id]
@@ -581,6 +846,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     prepared_by_sample_id,
                     chain_pairs,
                     prompt_pack=prompt_pack,
+                    structurer_service=structurer_service,
                     judge_client=judge_client,
                 )
             except Exception as exc:  # noqa: BLE001
@@ -590,7 +856,11 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                         "stage": (
                             "oracle_judge"
                             if isinstance(exc, JudgeResponseFormatExhaustedError)
-                            else "oracle_evaluation"
+                            else (
+                                "oracle_structuring"
+                                if isinstance(exc, StructurerResponseFormatExhaustedError)
+                                else "oracle_evaluation"
+                            )
                         ),
                         "reason": f"{type(exc).__name__}: {exc}",
                     }
@@ -622,6 +892,14 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         ],
     )
     write_jsonl(
+        structured_predictions_path,
+        [
+            record.to_dict()
+            for sample_id, record in sorted(normal_structured_by_sample_id.items())
+            if sample_id in normal_target_sample_ids
+        ],
+    )
+    write_jsonl(
         results_path,
         [record.to_dict() for sample_id, record in sorted(normal_results_by_sample_id.items())],
     )
@@ -637,6 +915,14 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                 "protocol_id": config.protocol,
             }
             for sample_id, raw_output in sorted(chain_prediction_map.items())
+            if sample_id in chain_pair_by_downstream_id
+        ],
+    )
+    write_jsonl(
+        chain_structured_predictions_path,
+        [
+            record.to_dict()
+            for sample_id, record in sorted(chain_structured_by_sample_id.items())
             if sample_id in chain_pair_by_downstream_id
         ],
     )
@@ -670,10 +956,21 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         [sample_id for sample_id in existing_records_by_sample_id if sample_id in target_sample_ids]
     )
     normal_predicted_sample_ids = normal_target_sample_ids & set(normal_prediction_map)
+    normal_structured_sample_ids = normal_target_sample_ids & set(normal_structured_by_sample_id)
     normal_completed_sample_ids = normal_target_sample_ids & set(normal_results_by_sample_id)
     chain_target_sample_ids = chain_downstream_sample_ids & target_sample_ids
     chain_predicted_sample_ids = chain_target_sample_ids & set(chain_prediction_map)
+    chain_structured_sample_ids = chain_target_sample_ids & set(chain_structured_by_sample_id)
     chain_completed_sample_ids = chain_target_sample_ids & set(chain_results_by_sample_id)
+
+    failed_samples_this_run = [
+        *prediction_errors_this_run,
+        *structuring_errors_this_run,
+        *evaluation_errors_this_run,
+        *chain_prediction_errors_this_run,
+        *chain_structuring_errors_this_run,
+        *chain_evaluation_errors_this_run,
+    ]
 
     run_status = {
         "model_name": model_name,
@@ -681,24 +978,38 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         "run_name": run_dir.name,
         "total_target_samples": len(target_samples),
         "completed_samples_before_run": completed_before_run,
+        "structured_normal_samples_this_run": len(structured_normal_sample_ids_this_run),
         "completed_normal_samples_this_run": len(completed_normal_sample_ids_this_run),
+        "structured_chain_samples_this_run": len(structured_chain_sample_ids_this_run),
         "completed_chain_samples_this_run": len(completed_chain_sample_ids_this_run),
         "completed_samples_total": completed_total,
         "pending_prediction_sample_ids": sorted(normal_target_sample_ids - normal_predicted_sample_ids),
-        "predicted_not_evaluated_sample_ids": sorted(
-            normal_predicted_sample_ids - normal_completed_sample_ids
+        "predicted_not_structured_sample_ids": sorted(
+            normal_predicted_sample_ids - normal_structured_sample_ids
+        ),
+        "structured_not_evaluated_sample_ids": sorted(
+            normal_structured_sample_ids - normal_completed_sample_ids
         ),
         "pending_chain_prediction_sample_ids": sorted(
             chain_target_sample_ids - chain_predicted_sample_ids
         ),
-        "chain_predicted_not_evaluated_sample_ids": sorted(
-            chain_predicted_sample_ids - chain_completed_sample_ids
+        "chain_predicted_not_structured_sample_ids": sorted(
+            chain_predicted_sample_ids - chain_structured_sample_ids
+        ),
+        "chain_structured_not_evaluated_sample_ids": sorted(
+            chain_structured_sample_ids - chain_completed_sample_ids
         ),
         "blocked_chain_sample_ids": sorted(set(blocked_chain_sample_ids)),
         "prediction_errors_this_run": prediction_errors_this_run,
+        "structuring_errors_this_run": structuring_errors_this_run,
         "evaluation_errors_this_run": evaluation_errors_this_run,
         "chain_prediction_errors_this_run": chain_prediction_errors_this_run,
+        "chain_structuring_errors_this_run": chain_structuring_errors_this_run,
         "chain_evaluation_errors_this_run": chain_evaluation_errors_this_run,
+        "failed_samples_this_run": failed_samples_this_run,
+        "failed_sample_ids_this_run": sorted(
+            {error["sample_id"] for error in failed_samples_this_run}
+        ),
         "oracle_errors_this_run": oracle_errors_this_run,
     }
     summary_payload = {
@@ -715,6 +1026,8 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         "Run status: "
         f"{completed_total}/{len(target_samples)} completed, "
         f"{len(run_status['pending_prediction_sample_ids'])} pending prediction, "
+        f"{len(run_status['predicted_not_structured_sample_ids'])} predicted but not structured, "
+        f"{len(run_status['structured_not_evaluated_sample_ids'])} structured but not evaluated, "
         f"{len(run_status['pending_chain_prediction_sample_ids'])} pending chain prediction."
     )
     print(f"Wrote evaluation artifacts to {run_dir}")

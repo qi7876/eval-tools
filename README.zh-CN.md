@@ -17,7 +17,7 @@
 - Experiment B 所需 chain manifest 生成
 - 主协议 `main` 和 Experiment D 固定预算协议的 prepared-data 构建
 - 在线 adapter 模式评测
-- 各任务输出归一化
+- 框架统一负责 prompt 构造、链式历史注入、结构化抽取与评分
 - 指标计算与样本级 pass/fail 判断
 - 通过 OpenAI-compatible API 的 LLM-as-a-judge
 - Experiment A 汇总
@@ -36,7 +36,8 @@
 - [src/omnichain_eval/dataset.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/dataset.py)：原始数据加载和校验
 - [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py)：采样协议
 - [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py)：prepared-data 构建
-- [src/omnichain_eval/normalize.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/normalize.py)：模型输出归一化
+- [src/omnichain_eval/normalize.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/normalize.py)：结构化输出严格校验
+- [src/omnichain_eval/structurer.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/structurer.py)：固定 structurer LLM 接口
 - [src/omnichain_eval/metrics.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/metrics.py)：指标计算
 - [src/omnichain_eval/judge.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/judge.py)：Judge 接口
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)：实验编排
@@ -164,6 +165,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 [judge]
 backend = "openai"
+prompt_path = "prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -389,11 +391,13 @@ prepared_data/
 
 当前 `run-eval` 只保留在线 adapter 模式。
 
-每个 run 目录下会维护 4 个可续测文件：
+每个 run 目录下会维护 6 个可续测文件：
 
 - `predictions.jsonl`：独立任务和链式上游任务的原始输出
+- `structured_predictions.jsonl`：这些样本的结构化输出
 - `results.jsonl`：这些样本的完成态评测结果
 - `chain_predictions.jsonl`：链式下游任务的原始输出
+- `chain_structured_predictions.jsonl`：链式下游任务的结构化输出
 - `chain_results.jsonl`：链式下游任务的完成态评测结果
 
 每次 run 结束后，框架都会基于当前最新结果重写 `summary.json`。
@@ -413,6 +417,10 @@ prepared_data/
 [run_eval]
 adapter = "mock"
 prompt_root = "prompts/benchmark_v1"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
 ```
 
 或者：
@@ -421,9 +429,14 @@ prompt_root = "prompts/benchmark_v1"
 [run_eval]
 adapter = "my_project.adapters.qwen:QwenVideoAdapter"
 prompt_root = "prompts/benchmark_v1"
+
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
 ```
 
 `[run_eval].prompt_root` 现在是必填项，必须指向一个包含 11 个任务 Markdown 模板的 prompt 目录。
+`[structurer].prompt_root` 也是必填项，必须指向 structurer prompt 模板目录。
 
 ### adapter 接口
 
@@ -432,8 +445,6 @@ prompt_root = "prompts/benchmark_v1"
 接口如下：
 
 ```python
-from typing import Any
-
 from omnichain_eval.adapters.base import BaseModelAdapter
 from omnichain_eval.schema import ModelInput
 
@@ -452,7 +463,7 @@ class MyAdapter(BaseModelAdapter):
     def predict(
         self,
         model_input: ModelInput,
-    ) -> Any:
+    ) -> str:
         ...
 ```
 
@@ -460,8 +471,6 @@ class MyAdapter(BaseModelAdapter):
 
 adapter 现在会收到一个 `ModelInput`。常用字段包括：
 
-- `model_input.task_name`
-- `model_input.frame_files`
 - `model_input.messages`
 - `model_input.oracle_track`
 - `model_input.sample`
@@ -470,19 +479,21 @@ adapter 现在会收到一个 `ModelInput`。常用字段包括：
 
 - `sample_id`
 - `protocol_id`
+- `task_name`
 - `question_text`
 - `sampled_frames_original`
 - `sampled_to_original`
+- `frame_files`
 - `reference_payload`
 - `q_window`
 - `a_window`
 - `metadata`
 
-通常你直接把 `model_input.frame_files` 和 `model_input.messages` 送给模型即可。
+通常你直接从 `model_input.sample.frame_files` 取图像绝对路径，并把 `model_input.messages` 送给模型即可。
 
 说明：
 
-- `frame_files` 是绝对路径
+- `model_input.sample.frame_files` 是已经展开后的绝对路径
 - 每张图已经按采样顺序排好
 - sampled 索引就是 `frame_files` 的顺序索引
 
@@ -495,13 +506,13 @@ adapter 现在会收到一个 `ModelInput`。常用字段包括：
 
 ### adapter 应返回什么
 
-可以返回：
+adapter 应直接返回模型的原始回答字符串。
 
-- Python `dict`
-- JSON 字符串
-- 对于纯文本任务，也可以直接返回普通字符串
+后续工作都由框架统一处理：
 
-评测器会自动调用 normalization，把输出转成 benchmark 需要的标准结构。
+- 把原始回答送入固定的 structurer 模块
+- 校验结构化 JSON
+- 再把校验后的结构化结果送入评分和 judge 逻辑
 
 ### 各任务标准输出格式
 
@@ -572,7 +583,6 @@ adapter 现在会收到一个 `ModelInput`。常用字段包括：
 
 ```python
 from pathlib import Path
-from typing import Any
 
 from omnichain_eval.adapters.base import BaseModelAdapter
 from omnichain_eval.schema import ModelInput
@@ -589,19 +599,16 @@ class MyVideoAdapter(BaseModelAdapter):
     def predict(
         self,
         model_input: ModelInput,
-    ) -> Any:
-        image_paths = [Path(path) for path in model_input.frame_files]
+    ) -> str:
+        image_paths = [Path(path) for path in model_input.sample.frame_files]
         messages = model_input.messages_as_dicts()
         sample = model_input.sample
 
         # 在这里替换成你的真实模型调用逻辑
         if sample.task_name == "Scoreboard_Single":
-            return {
-                "text": "The score is 1-0.",
-                "bbox": [100, 900, 1000, 980]
-            }
+            return '{"text": "The score is 1-0.", "bbox": [100, 900, 1000, 980]}'
 
-        return {"text": "placeholder"}
+        return '{"text": "placeholder"}'
 ```
 
 然后这样运行：
@@ -629,17 +636,28 @@ api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+invalid_json_retries = 2
+concurrency = 1
 ```
 
 ## Judge 配置
 
 Judge 的配置写在 `run-eval` 所使用 TOML 的 `[judge]` section 里。
+`[judge].prompt_path` 指向定义 judge system/user prompt 的 Markdown 文件。
 
 典型配置如下：
 
 ```toml
 [judge]
 backend = "openai"
+prompt_path = "prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -666,6 +684,7 @@ export EVAL_JUDGE_API_KEY="your-api-key"
 ```toml
 [judge]
 backend = "static-pass"
+prompt_path = "prompts/judge_v1.md"
 ```
 
 或者：
@@ -673,6 +692,7 @@ backend = "static-pass"
 ```toml
 [judge]
 backend = "static-fail"
+prompt_path = "prompts/judge_v1.md"
 ```
 
 当前 retry 规则：
@@ -690,13 +710,16 @@ backend = "static-fail"
 行为如下：
 
 - 独立任务和链式上游任务的推理结果写入 `predictions.jsonl`
+- 这些样本的结构化结果写入 `structured_predictions.jsonl`
 - 这些样本的完成态评测写入 `results.jsonl`
 - 链式下游任务的推理结果写入 `chain_predictions.jsonl`
+- 链式下游任务的结构化结果写入 `chain_structured_predictions.jsonl`
 - 链式下游任务的完成态评测写入 `chain_results.jsonl`
 - 如果中途中断，再次使用同一个配置运行时，会自动跳过已完成样本
-- 如果恰好中断在“预测已写入、评分未完成”，则会复用已保存的预测，只补做评分
+- 如果恰好中断在“预测已写入、结构化未完成”，则会复用已保存的 prediction，只补做结构化
+- 如果恰好中断在“结构化已写入、评分未完成”，则会复用已保存的结构化结果，只补做评分
 - 如果链式上游样本还没有产出回答，对应下游样本会保持 blocked，等下一轮继续
-- 续测状态不是靠单独的失败清单，而是每轮都重新比对这 4 个 artifact 文件
+- 续测状态不是靠单独的失败清单，而是每轮都重新比对这 6 个 artifact 文件
 
 重要说明：
 
@@ -723,31 +746,38 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 其中包括：
 
 - `predictions.jsonl`
+- `structured_predictions.jsonl`
 - `results.jsonl`
 - `chain_predictions.jsonl`
+- `chain_structured_predictions.jsonl`
 - `chain_results.jsonl`
 - `summary.json`
 
 这些文件的语义是：
 
 - `predictions.jsonl`：独立任务和链式上游任务的原始模型输出
+- `structured_predictions.jsonl`：这些样本校验通过的结构化输出
 - `results.jsonl`：这些样本的完成态评测结果
 - `chain_predictions.jsonl`：链式下游任务的原始模型输出
+- `chain_structured_predictions.jsonl`：链式下游样本校验通过的结构化输出
 - `chain_results.jsonl`：链式下游任务的完成态评测结果
-- 如果某个 sample 已经完成预测，但 judge 或评分流程没有完成，那么它不会写入对应的 `*_results.jsonl`，下一轮会继续补测
+- 如果某个 sample 已经完成预测，但结构化还没完成，那么它不会写入对应的 `*_structured_predictions.jsonl`，下一轮会继续补测
+- 如果某个 sample 已经完成结构化，但 judge 或评分流程没有完成，那么它不会写入对应的 `*_results.jsonl`，下一轮会继续补测
 
 `summary.json` 会额外记录：
 
 - 本轮目标 sample 总数
 - 本轮开始前已完成数、本轮新完成数、累计完成数
 - `pending_prediction_sample_ids`
-- `predicted_not_evaluated_sample_ids`
+- `predicted_not_structured_sample_ids`
+- `structured_not_evaluated_sample_ids`
 - `overall`
 - 各 task 的 summary
 - `experiment_b`
 - 是否支持 commentary
 - `pending_chain_prediction_sample_ids`
-- `chain_predicted_not_evaluated_sample_ids`
+- `chain_predicted_not_structured_sample_ids`
+- `chain_structured_not_evaluated_sample_ids`
 - `blocked_chain_sample_ids`
 - 本轮 normal / chain / oracle 失败摘要
 
@@ -915,21 +945,20 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 1. 先为这个模型和协议新建一个独立 TOML 文件
 2. 运行 `prepare-data`
 3. 编写一个 `BaseModelAdapter` 子类
-4. 在 TOML 里配置 `[run_eval].prompt_root`，并让 adapter 只消费：
-   - `model_input.frame_files`
-   - `model_input.messages`
-5. 让模型返回 benchmark 要求的 canonical output
-6. 先跑 `run-eval --config your_model.toml` 对 `main` 协议评测
-7. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
-8. 如需 OracleTrack，再实现 `supports_oracle_track()`
-9. 最后为 Experiment D 协议分别写 TOML，并复用相同的 prepared cache
+4. 在 TOML 里同时配置 `[run_eval].prompt_root` 和 `[structurer].prompt_root`
+5. 让 adapter 只消费 `model_input.sample`、`model_input.messages` 和 sample 对应的 prepared frame bundle
+6. 让 adapter 直接返回模型原始回答字符串
+7. 先跑 `run-eval --config your_model.toml` 对 `main` 协议评测
+8. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
+9. 如需 OracleTrack，再实现 `supports_oracle_track()`
+10. 最后为 Experiment D 协议分别写 TOML，并复用相同的 prepared cache
 
 如果按这个方式做，模型接入层会很薄：
 
 - 数据解析不用你管
 - 视频采样不用你管
 - frame cache 不用你管
-- normalization 不用你管
+- structurer 和结构校验不用你管
 - 评分不用你管
 - summary 不用你管
 

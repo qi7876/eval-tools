@@ -20,7 +20,7 @@ The current implementation includes:
 - Chain manifest generation for Experiment B
 - Prepared-data generation for the main fixed-budget protocol and Experiment D fixed-budget ablations
 - Live adapter-based evaluation
-- Task normalization and scoring
+- Framework-owned prompt building, chain-history injection, structured extraction, and scoring
 - LLM-as-a-judge integration through an OpenAI-compatible API
 - Experiment A summary
 - Experiment B summary, including OracleTrack plumbing
@@ -38,7 +38,8 @@ Key files:
 - [src/omnichain_eval/dataset.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/dataset.py): raw data loading and validation
 - [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py): sampling rules
 - [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py): prepared-data cache builder
-- [src/omnichain_eval/normalize.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/normalize.py): prediction normalization
+- [src/omnichain_eval/normalize.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/normalize.py): strict structured-output validation
+- [src/omnichain_eval/structurer.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/structurer.py): fixed structurer LLM integration
 - [src/omnichain_eval/metrics.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/metrics.py): scoring logic
 - [src/omnichain_eval/judge.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/judge.py): judge backend
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py): experiment orchestration
@@ -157,6 +158,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 [judge]
 backend = "openai"
+prompt_path = "prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -258,11 +260,13 @@ The cache is sample-centric. The runtime evaluation path reads from `prepared_da
 
 `run-eval` now uses live adapter mode only.
 
-The runtime writes and resumes from four artifact files inside each run directory:
+The runtime writes and resumes from six artifact files inside each run directory:
 
 - `predictions.jsonl`: independent tasks and chain-upstream tasks
+- `structured_predictions.jsonl`: structured outputs for those samples
 - `results.jsonl`: completed evaluation records for those samples
 - `chain_predictions.jsonl`: chain-downstream raw outputs
+- `chain_structured_predictions.jsonl`: structured outputs for chain-downstream samples
 - `chain_results.jsonl`: completed evaluation records for chain-downstream samples
 
 After each run, the framework recomputes the latest aggregate metrics and rewrites `summary.json`.
@@ -368,16 +372,25 @@ Examples:
 [run_eval]
 adapter = "mock"
 prompt_root = "prompts/benchmark_v1"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
 ```
 
 ```toml
 [run_eval]
 adapter = "my_project.adapters.qwen:QwenVideoAdapter"
 prompt_root = "prompts/benchmark_v1"
+
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
 ```
 
 The adapter class must be importable in the current Python environment.
 `[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 11 task Markdown templates.
+`[structurer].prompt_root` is also required and must point to the structurer prompt pack.
 
 ### Adapter Interface
 
@@ -386,8 +399,6 @@ Your adapter must inherit from `BaseModelAdapter` in [src/omnichain_eval/adapter
 Required interface:
 
 ```python
-from typing import Any
-
 from omnichain_eval.adapters.base import BaseModelAdapter
 from omnichain_eval.schema import ModelInput
 
@@ -406,7 +417,7 @@ class MyAdapter(BaseModelAdapter):
     def predict(
         self,
         model_input: ModelInput,
-    ) -> Any:
+    ) -> str:
         ...
 ```
 
@@ -414,8 +425,6 @@ class MyAdapter(BaseModelAdapter):
 
 The adapter now receives a `ModelInput` object. Important fields are:
 
-- `model_input.task_name`: benchmark task name
-- `model_input.frame_files`: absolute paths to prepared JPEG frames
 - `model_input.messages`: final rendered prompt messages, already built by the framework
 - `model_input.oracle_track`: whether this is an oracle rerun
 - `model_input.sample`: the full `PreparedSample`
@@ -424,14 +433,18 @@ Inside `model_input.sample`, common fields include:
 
 - `sample_id`
 - `protocol_id`
+- `task_name`
 - `question_text`
 - `sampled_frames_original`
 - `sampled_to_original`
+- `frame_files`
 - `reference_payload`
 - `q_window` or `a_window`
 - `metadata`
 
 In normal model adapters you should ignore `model_input.sample.reference_payload`, since it is GT. It is present because the framework also supports the built-in `mock` adapter and oracle-tracking workflows.
+
+In practice, adapters usually read frame paths from `model_input.sample.frame_files` and prompts from `model_input.messages`.
 
 For chain-downstream `Spatial_Imagination`, the framework automatically builds the final message list as:
 
@@ -442,13 +455,13 @@ For chain-downstream `Spatial_Imagination`, the framework automatically builds t
 
 ### What The Adapter Should Return
 
-The adapter can return:
+The adapter should return the model's raw answer as a string.
 
-- a Python `dict`
-- a JSON string
-- a plain text string for text-only tasks
+The framework then:
 
-The evaluator will normalize the output into the benchmark’s canonical formats.
+- sends that raw answer to the fixed structurer module
+- validates the structured JSON
+- passes the validated structured output into scoring and judge logic
 
 Canonical expectations by task:
 
@@ -516,7 +529,6 @@ This example shows the minimum structure. The model call is pseudocode.
 
 ```python
 from pathlib import Path
-from typing import Any
 
 from omnichain_eval.adapters.base import BaseModelAdapter
 from omnichain_eval.schema import ModelInput
@@ -533,20 +545,17 @@ class MyVideoAdapter(BaseModelAdapter):
     def predict(
         self,
         model_input: ModelInput,
-    ) -> Any:
-        image_paths = [Path(path) for path in model_input.frame_files]
+    ) -> str:
+        image_paths = [Path(path) for path in model_input.sample.frame_files]
         messages = model_input.messages_as_dicts()
         sample = model_input.sample
 
         # Replace this block with your real model call.
-        # The result may be a dict or a JSON string.
+        # Return the raw model answer as a string.
         if sample.task_name == "Scoreboard_Single":
-            return {
-                "text": "The score is 1-0.",
-                "bbox": [100, 900, 1000, 980],
-            }
+            return '{"text": "The score is 1-0.", "bbox": [100, 900, 1000, 980]}'
 
-        return {"text": "placeholder"}
+        return '{"text": "placeholder"}'
 ```
 
 Run it like this:
@@ -564,6 +573,7 @@ The TOML should contain at least:
 prepared_root = "prepared_data"
 protocol = "main"
 artifacts_root = "artifacts/runs"
+prompt_root = "prompts/benchmark_v1"
 adapter = "my_package.my_adapter:MyVideoAdapter"
 
 [judge]
@@ -573,17 +583,28 @@ api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer]
+backend = "openai"
+prompt_root = "prompts/structurer_v1"
+base_url = "http://your-structurer-endpoint/v1"
+api_key_env = "EVAL_STRUCTURER_API_KEY"
+model = "gpt-4.1-mini"
+invalid_json_retries = 2
+concurrency = 1
 ```
 
 ## Judge Configuration
 
 Judge settings live in the `[judge]` section of the TOML file used by `run-eval`.
+`[judge].prompt_path` points to the Markdown file that defines the judge system/user prompt.
 
 Typical OpenAI-compatible configuration:
 
 ```toml
 [judge]
 backend = "openai"
+prompt_path = "prompts/judge_v1.md"
 base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
@@ -610,6 +631,7 @@ For local smoke tests you can avoid external judge calls by changing the backend
 ```toml
 [judge]
 backend = "static-pass"
+prompt_path = "prompts/judge_v1.md"
 ```
 
 or:
@@ -617,6 +639,7 @@ or:
 ```toml
 [judge]
 backend = "static-fail"
+prompt_path = "prompts/judge_v1.md"
 ```
 
 Retry behavior:
@@ -634,13 +657,16 @@ Retry behavior:
 Behavior:
 
 - predictions for independent tasks and chain-upstream tasks are appended to `predictions.jsonl`
+- structured outputs for those samples are appended to `structured_predictions.jsonl`
 - completed evaluation records for those samples are appended to `results.jsonl`
 - chain-downstream predictions are appended to `chain_predictions.jsonl`
+- structured outputs for chain-downstream samples are appended to `chain_structured_predictions.jsonl`
 - completed chain-downstream evaluation records are appended to `chain_results.jsonl`
 - if the process is interrupted, rerunning the same config will skip completed samples
-- if interruption happened after prediction was written but before scoring finished, the runner reuses the saved prediction and only reruns scoring
+- if interruption happened after prediction was written but before structuring finished, the runner reuses the saved prediction and only reruns structuring
+- if interruption happened after structuring was written but before scoring finished, the runner reuses the saved structured output and only reruns scoring
 - if a chain-upstream answer is missing, the corresponding chain-downstream sample remains blocked until the next run
-- resumability is derived from those four artifact files, not from a separate failure list
+- resumability is derived from those six artifact files, not from a separate failure list
 
 Important:
 
@@ -667,31 +693,38 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 Files:
 
 - `predictions.jsonl`
+- `structured_predictions.jsonl`
 - `results.jsonl`
 - `chain_predictions.jsonl`
+- `chain_structured_predictions.jsonl`
 - `chain_results.jsonl`
 - `summary.json`
 
 Artifact semantics:
 
 - `predictions.jsonl` stores raw model outputs for independent tasks and chain-upstream tasks
+- `structured_predictions.jsonl` stores validated structured outputs for those samples
 - `results.jsonl` stores completed evaluation records for those samples
 - `chain_predictions.jsonl` stores raw model outputs for chain-downstream samples
+- `chain_structured_predictions.jsonl` stores validated structured outputs for chain-downstream samples
 - `chain_results.jsonl` stores completed evaluation records for chain-downstream samples
-- if a sample already has a prediction but judge or scoring did not complete, it remains absent from its corresponding `*_results.jsonl` file and will be retried on the next run
+- if a sample already has a prediction but structuring did not complete, it remains absent from its corresponding `*_structured_predictions.jsonl` file and will be retried on the next run
+- if a sample already has a structured output but judge or scoring did not complete, it remains absent from its corresponding `*_results.jsonl` file and will be retried on the next run
 
 `summary.json` includes:
 
 - total target sample count for this run
 - completed counts before this invocation, in this invocation, and in total
 - `pending_prediction_sample_ids`
-- `predicted_not_evaluated_sample_ids`
+- `predicted_not_structured_sample_ids`
+- `structured_not_evaluated_sample_ids`
 - `overall`
 - per-task summaries
 - `experiment_b` if a chain manifest was provided
 - whether commentary was supported
 - `pending_chain_prediction_sample_ids`
-- `chain_predicted_not_evaluated_sample_ids`
+- `chain_predicted_not_structured_sample_ids`
+- `chain_structured_not_evaluated_sample_ids`
 - `blocked_chain_sample_ids`
 - error summaries for normal, chain, and oracle evaluation in this invocation
 
@@ -848,11 +881,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 1. Create a dedicated TOML file for the model and protocol you want to evaluate.
 2. Run `prepare-data` for the protocol(s) you need.
 3. Implement a `BaseModelAdapter` subclass in your own importable module.
-4. Point `[run_eval].prompt_root` to your prompt pack and make the adapter consume `model_input.frame_files` and `model_input.messages`.
-5. Return task outputs in the benchmark’s sampled-frame coordinate space.
-6. Run `run-eval --config your_model.toml` on `main`.
-7. Set `[run_eval].chain_manifest` to get Experiment B metrics.
-8. If needed, implement `supports_oracle_track()` and handle `oracle_track=True`.
-9. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
+4. Point `[run_eval].prompt_root` to your inference prompt pack and `[structurer].prompt_root` to your structurer prompt pack.
+5. Make the adapter consume `model_input.sample`, `model_input.messages`, and the prepared frame bundle referenced by the sample.
+6. Return the raw model answer as a string.
+7. Run `run-eval --config your_model.toml` on `main`.
+8. Set `[run_eval].chain_manifest` to get Experiment B metrics.
+9. If needed, implement `supports_oracle_track()` and handle `oracle_track=True`.
+10. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
 
-If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, normalization, scoring, summary generation, and chain accounting remain inside the framework.
+If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, prompt construction, chain accounting, structured extraction, scoring, and summary generation remain inside the framework.

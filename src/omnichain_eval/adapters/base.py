@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import json
 from abc import ABC, abstractmethod
-from typing import Any
 
 from ..constants import (
     TASK_COMMENTARY,
@@ -35,7 +35,7 @@ class BaseModelAdapter(ABC):
     def predict(
         self,
         model_input: ModelInput,
-    ) -> Any:
+    ) -> str:
         raise NotImplementedError
 
 
@@ -48,34 +48,37 @@ class MockAdapter(BaseModelAdapter):
     def predict(
         self,
         model_input: ModelInput,
-    ) -> Any:
+    ) -> str:
         sample = model_input.sample
         oracle_track = model_input.oracle_track
         reference = sample.reference_payload
+        payload: dict[str, object]
         if sample.task_name in TEXT_ONLY_TASKS:
-            return {"text": reference["text"]}
-        if sample.task_name == TASK_SCOREBOARD_SINGLE:
-            return {"text": reference["text"], "bbox": reference["bbox"]}
-        if sample.task_name == TASK_OBJECTS_SPATIAL:
-            return {
+            payload = {"text": reference["text"]}
+        elif sample.task_name == TASK_SCOREBOARD_SINGLE:
+            payload = {"text": reference["text"], "bbox": reference["bbox"]}
+        elif sample.task_name == TASK_OBJECTS_SPATIAL:
+            payload = {
                 "text": reference["text"],
                 "bbox_a": reference["bbox_a"],
                 "bbox_b": reference["bbox_b"],
             }
-        if sample.task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
-            return {"segments": reference["segments_sampled"]}
-        if sample.task_name == TASK_CONTINUOUS_ACTIONS:
-            return {
+        elif sample.task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
+            payload = {"segments": reference["segments_sampled"]}
+        elif sample.task_name == TASK_CONTINUOUS_ACTIONS:
+            payload = {
                 "segments": reference["segments_sampled"],
                 "tracking": reference.get("tracking_gt_sampled", []),
             }
-        if sample.task_name == TASK_STG:
+        elif sample.task_name == TASK_STG:
             tracking = [] if oracle_track else reference.get("tracking_gt_sampled", [])
-            return {
+            payload = {
                 "time_window_sampled": reference["time_window_sampled"],
                 "tracking": tracking,
             }
-        raise ValueError(f"mock adapter does not support task {sample.task_name}")
+        else:
+            raise ValueError(f"mock adapter does not support task {sample.task_name}")
+        return json.dumps(payload, ensure_ascii=False)
 
 
 def resolve_adapter(spec: str) -> BaseModelAdapter:

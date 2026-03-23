@@ -135,8 +135,6 @@ class RenderedPrompt:
 @dataclass(slots=True)
 class ModelInput:
     sample: PreparedSample
-    task_name: str
-    frame_files: list[str]
     messages: list[PromptMessage]
     oracle_track: bool = False
 
@@ -145,15 +143,52 @@ class ModelInput:
 
 
 @dataclass(slots=True)
-class NormalizationResult:
+class StructuredPredictionResult:
     task_name: str
-    raw_output: Any
-    normalized_prediction: dict[str, Any] | None
+    raw_output: str
+    structured_prediction: dict[str, Any] | None
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    structurer_raw_response: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return to_jsonable(self)
+
+
+@dataclass(slots=True)
+class StructuredPredictionRecord:
+    sample_id: str
+    task_name: str
+    video_key: str
+    protocol_id: str
+    raw_output: str
+    structured_prediction: dict[str, Any] | None
+    structuring_errors: list[str]
+    structuring_warnings: list[str]
+    structurer_raw_response: str | None = None
+    pair_id: str | None = None
+    upstream_sample_id: str | None = None
+    downstream_sample_id: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return to_jsonable(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "StructuredPredictionRecord":
+        return cls(
+            sample_id=payload["sample_id"],
+            task_name=payload["task_name"],
+            video_key=payload["video_key"],
+            protocol_id=payload["protocol_id"],
+            raw_output=str(payload["raw_output"]),
+            structured_prediction=payload.get("structured_prediction"),
+            structuring_errors=list(payload.get("structuring_errors", [])),
+            structuring_warnings=list(payload.get("structuring_warnings", [])),
+            structurer_raw_response=payload.get("structurer_raw_response"),
+            pair_id=payload.get("pair_id"),
+            upstream_sample_id=payload.get("upstream_sample_id"),
+            downstream_sample_id=payload.get("downstream_sample_id"),
+        )
 
 
 @dataclass(slots=True)
@@ -176,14 +211,14 @@ class EvaluationRecord:
     task_name: str
     video_key: str
     protocol_id: str
-    normalized_prediction: dict[str, Any] | None
-    normalization_errors: list[str]
-    normalization_warnings: list[str]
+    structured_prediction: dict[str, Any] | None
+    structuring_errors: list[str]
+    structuring_warnings: list[str]
     component_metrics: dict[str, Any]
     component_pass: dict[str, Any]
     task_pass: int
     judge_decision: dict[str, Any] | None = None
-    raw_output: Any = None
+    raw_output: str | None = None
     bertscore_candidate: str | None = None
     bertscore_reference: str | None = None
 
@@ -197,9 +232,9 @@ class EvaluationRecord:
             task_name=payload["task_name"],
             video_key=payload["video_key"],
             protocol_id=payload["protocol_id"],
-            normalized_prediction=payload.get("normalized_prediction"),
-            normalization_errors=list(payload.get("normalization_errors", [])),
-            normalization_warnings=list(payload.get("normalization_warnings", [])),
+            structured_prediction=payload.get("structured_prediction"),
+            structuring_errors=list(payload.get("structuring_errors", [])),
+            structuring_warnings=list(payload.get("structuring_warnings", [])),
             component_metrics=dict(payload.get("component_metrics", {})),
             component_pass=dict(payload.get("component_pass", {})),
             task_pass=int(payload["task_pass"]),

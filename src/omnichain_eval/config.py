@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .constants import JUDGE_MODEL_DEFAULT
+from .constants import JUDGE_MODEL_DEFAULT, STRUCTURER_MODEL_DEFAULT
 
 
 def _load_toml(path: Path) -> tuple[dict[str, Any], Path]:
@@ -61,6 +61,7 @@ class PrepareDataConfig:
 @dataclass(slots=True)
 class JudgeConfig:
     backend: str = "openai"
+    prompt_path: Path | None = None
     base_url: str | None = None
     api_key: str | None = None
     api_key_env: str = "EVAL_JUDGE_API_KEY"
@@ -86,6 +87,34 @@ class JudgeConfig:
 
 
 @dataclass(slots=True)
+class StructurerConfig:
+    backend: str = "openai"
+    base_url: str | None = None
+    api_key: str | None = None
+    api_key_env: str = "EVAL_STRUCTURER_API_KEY"
+    model: str = STRUCTURER_MODEL_DEFAULT
+    temperature: float = 0.0
+    top_p: float = 1.0
+    top_k: int = 1
+    max_tokens: int = 512
+    n: int = 1
+    seed: int = 42
+    invalid_json_retries: int = 0
+    concurrency: int = 1
+    prompt_root: Path | None = None
+
+    def resolved_base_url(self) -> str | None:
+        if self.base_url:
+            return self.base_url
+        return os.environ.get("EVAL_STRUCTURER_BASE_URL")
+
+    def resolved_api_key(self) -> str | None:
+        if self.api_key:
+            return self.api_key
+        return os.environ.get(self.api_key_env)
+
+
+@dataclass(slots=True)
 class RunEvalConfig:
     prepared_root: Path = Path("prepared_data")
     protocol: str = "main"
@@ -98,6 +127,7 @@ class RunEvalConfig:
     enable_bertscore: bool = False
     commentary_unsupported: bool = False
     adapter: str | None = None
+    structurer: StructurerConfig = field(default_factory=StructurerConfig)
     judge: JudgeConfig = field(default_factory=JudgeConfig)
 
 
@@ -143,6 +173,7 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
     table = _table(payload, "judge")
     config = JudgeConfig(
         backend=str(table.get("backend", "openai")),
+        prompt_path=_resolve_path(base_dir, table.get("prompt_path")),
         base_url=table.get("base_url"),
         api_key=table.get("api_key"),
         api_key_env=str(table.get("api_key_env", "EVAL_JUDGE_API_KEY")),
@@ -162,6 +193,37 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
         raise ValueError("[judge].invalid_json_retries must be >= 0")
     if config.concurrency < 1:
         raise ValueError("[judge].concurrency must be >= 1")
+    if config.prompt_path is None:
+        raise ValueError("[judge].prompt_path is required")
+    return config
+
+
+def _load_structurer_config(base_dir: Path, payload: dict[str, Any]) -> StructurerConfig:
+    table = _table(payload, "structurer")
+    config = StructurerConfig(
+        backend=str(table.get("backend", "openai")),
+        base_url=table.get("base_url"),
+        api_key=table.get("api_key"),
+        api_key_env=str(table.get("api_key_env", "EVAL_STRUCTURER_API_KEY")),
+        model=str(table.get("model", STRUCTURER_MODEL_DEFAULT)),
+        temperature=float(table.get("temperature", 0.0)),
+        top_p=float(table.get("top_p", 1.0)),
+        top_k=int(table.get("top_k", 1)),
+        max_tokens=int(table.get("max_tokens", 512)),
+        n=int(table.get("n", 1)),
+        seed=int(table.get("seed", 42)),
+        invalid_json_retries=int(table.get("invalid_json_retries", 0)),
+        concurrency=int(table.get("concurrency", 1)),
+        prompt_root=_resolve_path(base_dir, table.get("prompt_root")),
+    )
+    if config.backend not in {"openai", "static-parse"}:
+        raise ValueError("[structurer].backend must be one of: openai, static-parse")
+    if config.invalid_json_retries < 0:
+        raise ValueError("[structurer].invalid_json_retries must be >= 0")
+    if config.concurrency < 1:
+        raise ValueError("[structurer].concurrency must be >= 1")
+    if config.prompt_root is None:
+        raise ValueError("[structurer].prompt_root is required")
     return config
 
 
@@ -188,6 +250,7 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
         enable_bertscore=bool(table.get("enable_bertscore", False)),
         commentary_unsupported=bool(table.get("commentary_unsupported", False)),
         adapter=table.get("adapter"),
+        structurer=_load_structurer_config(base_dir, payload),
         judge=_load_judge_config(base_dir, payload),
     )
     if not config.adapter:

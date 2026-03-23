@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
@@ -12,7 +13,6 @@ from openai import OpenAI
 from .constants import (
     JUDGE_JSON_KEYS,
     JUDGE_MODEL_DEFAULT,
-    JUDGE_SYSTEM_PROMPT,
     TASK_AI_COACH,
     TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
@@ -25,7 +25,25 @@ from .constants import (
     TASK_TEMPORAL_CAUSAL,
 )
 from .schema import JudgeDecision
+from .template_pack import (
+    TaskTemplate,
+    TemplatePackError,
+    load_markdown_prompt_template,
+    render_template_text,
+)
 from .utils import extract_json_object
+
+_ALLOWED_JUDGE_VARIABLES = {
+    "task_name",
+    "question_text",
+    "task_specific_rule",
+    "reference_payload_json",
+    "prediction_payload_json",
+    "required_json_schema_json",
+}
+
+JudgePromptTemplateError = TemplatePackError
+JudgePromptTemplate = TaskTemplate
 
 
 class JudgeClient(ABC):
@@ -127,28 +145,59 @@ def _task_instruction(task_name: str) -> str:
     return "Apply the benchmark rubric strictly."
 
 
-def _build_user_prompt(
+def load_judge_prompt_template(path: Path) -> JudgePromptTemplate:
+    return load_markdown_prompt_template(
+        path,
+        allowed_variables=_ALLOWED_JUDGE_VARIABLES,
+    )
+
+
+def _judge_variables(
     task_name: str,
     question_text: str,
     reference_payload: dict[str, Any],
     prediction_payload: dict[str, Any],
-) -> str:
+) -> dict[str, str]:
     payload = {
         "task_name": task_name,
-        "question_or_query": question_text,
+        "question_text": question_text,
         "task_specific_rule": _task_instruction(task_name),
-        "reference": reference_payload,
-        "prediction": prediction_payload,
-        "required_json_schema": {
+        "reference_payload_json": json.dumps(reference_payload, ensure_ascii=False, indent=2),
+        "prediction_payload_json": json.dumps(prediction_payload, ensure_ascii=False, indent=2),
+        "required_json_schema_json": json.dumps(
+            {
             "correctness": 1,
             "completeness": 1,
             "faithfulness": 1,
             "final_pass": 1,
             "confidence": "high",
             "brief_reason": "Prediction matches the reference answer with acceptable paraphrasing.",
-        },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
     }
-    return json.dumps(payload, ensure_ascii=False, indent=2)
+    return payload
+
+
+def render_judge_prompt(
+    template: JudgePromptTemplate,
+    *,
+    task_name: str,
+    question_text: str,
+    reference_payload: dict[str, Any],
+    prediction_payload: dict[str, Any],
+) -> tuple[str, str]:
+    variables = _judge_variables(
+        task_name,
+        question_text,
+        reference_payload,
+        prediction_payload,
+    )
+    return (
+        render_template_text(template.system_template, variables, template.path),
+        render_template_text(template.user_template, variables, template.path),
+    )
 
 
 class OpenAIJudgeClient(JudgeClient):
@@ -159,6 +208,7 @@ class OpenAIJudgeClient(JudgeClient):
         *,
         base_url: str,
         api_key: str,
+        prompt_path: Path,
         model: str = JUDGE_MODEL_DEFAULT,
         temperature: float = 0.0,
         top_p: float = 1.0,
@@ -169,6 +219,7 @@ class OpenAIJudgeClient(JudgeClient):
         invalid_json_retries: int = 0,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
+        self.prompt_template = load_judge_prompt_template(prompt_path)
         self.model = model
         self.temperature = temperature
         self.top_p = top_p
@@ -182,6 +233,7 @@ class OpenAIJudgeClient(JudgeClient):
     def from_env(
         cls,
         *,
+        prompt_path: Path,
         temperature: float = 0.0,
         top_p: float = 1.0,
         top_k: int = 1,
@@ -200,6 +252,7 @@ class OpenAIJudgeClient(JudgeClient):
         return cls(
             base_url=base_url,
             api_key=api_key,
+            prompt_path=prompt_path,
             model=model,
             temperature=temperature,
             top_p=top_p,
@@ -283,6 +336,13 @@ class OpenAIJudgeClient(JudgeClient):
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
+        system_prompt, user_prompt = render_judge_prompt(
+            self.prompt_template,
+            task_name=task_name,
+            question_text=question_text,
+            reference_payload=reference_payload,
+            prediction_payload=prediction_payload,
+        )
         max_attempts = self.invalid_json_retries + 1
         last_raw_response: str | None = None
         last_error_reason = "judge response format was invalid"
@@ -290,16 +350,8 @@ class OpenAIJudgeClient(JudgeClient):
             completion = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": _build_user_prompt(
-                            task_name,
-                            question_text,
-                            reference_payload,
-                            prediction_payload,
-                        ),
-                    },
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
                 ],
                 temperature=self.temperature,
                 top_p=self.top_p,

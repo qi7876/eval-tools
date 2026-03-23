@@ -1,4 +1,4 @@
-"""Canonical prediction normalization."""
+"""Strict validation for structured benchmark predictions."""
 
 from __future__ import annotations
 
@@ -13,183 +13,239 @@ from .constants import (
     TASK_STG,
     TEXT_ONLY_TASKS,
 )
-from .schema import NormalizationResult
-from .utils import extract_json_object
+from .schema import PreparedSample, StructuredPredictionResult
 
 
-def _coerce_raw(raw_output: Any) -> Any:
-    if isinstance(raw_output, (dict, list)):
-        return raw_output
-    if isinstance(raw_output, str):
-        try:
-            return extract_json_object(raw_output)
-        except ValueError:
-            return raw_output.strip()
-    return raw_output
+def _coerce_text_field(payload: dict[str, Any], errors: list[str]) -> str:
+    if "text" not in payload:
+        errors.append("missing text field")
+        return ""
+    return str(payload["text"]).strip()
 
 
-def _coerce_text(parsed: Any) -> str | None:
-    if isinstance(parsed, str):
-        return parsed.strip()
-    if isinstance(parsed, dict):
-        value = parsed.get("text")
-        if value is None:
-            return None
-        return str(value).strip()
-    return None
-
-
-def _coerce_bbox(parsed: Any, *keys: str) -> list[float] | None:
-    if not isinstance(parsed, dict):
-        return None
-    value = None
-    for key in keys:
-        if key in parsed:
-            value = parsed[key]
-            break
-    if value is None:
-        return None
-    if not isinstance(value, list) or len(value) != 4:
-        return None
+def _coerce_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
+    if not isinstance(value, list):
+        errors.append(f"{field_name} must be a list")
+        return []
+    if len(value) == 0:
+        return []
+    if len(value) != 4:
+        errors.append(f"{field_name} must be empty or contain exactly 4 values")
+        return []
     return [float(item) for item in value]
 
 
-def _coerce_segments(parsed: Any) -> list[dict[str, Any]] | None:
-    if not isinstance(parsed, dict):
-        return None
-    raw_segments = parsed.get("segments")
-    if not isinstance(raw_segments, list):
-        return None
+def _coerce_segments(
+    value: Any,
+    num_sampled_frames: int,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        errors.append("segments must be a list")
+        return []
     segments: list[dict[str, Any]] = []
-    for segment in raw_segments:
+    for index, segment in enumerate(value):
         if not isinstance(segment, dict):
-            return None
-        start = segment.get("start_sampled", segment.get("start"))
-        end = segment.get("end_sampled", segment.get("end"))
-        text = segment.get("text")
-        if start is None or end is None or text is None:
-            return None
+            errors.append(f"segments[{index}] must be an object")
+            continue
+        if {"start_sampled", "end_sampled", "text"} - set(segment):
+            errors.append(
+                f"segments[{index}] must contain start_sampled, end_sampled, and text"
+            )
+            continue
+        start = int(segment["start_sampled"])
+        end = int(segment["end_sampled"])
+        if start < 0 or end < 0 or start >= num_sampled_frames or end >= num_sampled_frames:
+            errors.append(f"segments[{index}] index out of range: {start}-{end}")
+            continue
+        if start > end:
+            errors.append(f"segments[{index}] start > end: {start}-{end}")
+            continue
         segments.append(
             {
-                "start_sampled": int(start),
-                "end_sampled": int(end),
-                "text": str(text).strip(),
+                "start_sampled": start,
+                "end_sampled": end,
+                "text": str(segment["text"]).strip(),
             }
         )
     return segments
 
 
-def _coerce_tracking(parsed: Any) -> list[dict[str, Any]] | None:
-    if not isinstance(parsed, dict):
-        return None
-    raw_tracking = parsed.get("tracking")
-    if raw_tracking is None:
+def _coerce_tracking(
+    value: Any,
+    num_sampled_frames: int,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        errors.append("tracking must be a list")
         return []
-    if not isinstance(raw_tracking, list):
-        return None
     tracking: list[dict[str, Any]] = []
-    for row in raw_tracking:
+    for index, row in enumerate(value):
         if not isinstance(row, dict):
-            return None
-        frame_sampled = row.get("frame_sampled", row.get("sampled_frame", row.get("frame")))
-        bbox = row.get("bbox_mot", row.get("bbox"))
-        if frame_sampled is None or bbox is None or not isinstance(bbox, list) or len(bbox) != 4:
-            return None
+            errors.append(f"tracking[{index}] must be an object")
+            continue
+        if {"frame_sampled", "bbox_mot"} - set(row):
+            errors.append(f"tracking[{index}] must contain frame_sampled and bbox_mot")
+            continue
+        frame_sampled = int(row["frame_sampled"])
+        if frame_sampled < 0 or frame_sampled >= num_sampled_frames:
+            errors.append(f"tracking[{index}] frame_sampled out of range: {frame_sampled}")
+            continue
+        bbox_mot = _coerce_box(row["bbox_mot"], f"tracking[{index}].bbox_mot", errors)
+        if len(bbox_mot) != 4:
+            continue
         tracking.append(
             {
-                "frame_sampled": int(frame_sampled),
-                "bbox_mot": [float(value) for value in bbox],
+                "frame_sampled": frame_sampled,
+                "bbox_mot": bbox_mot,
             }
         )
     return tracking
 
 
-def normalize_prediction(task_name: str, raw_output: Any) -> NormalizationResult:
-    parsed = _coerce_raw(raw_output)
+def _coerce_time_window(
+    value: Any,
+    num_sampled_frames: int,
+    errors: list[str],
+) -> list[int]:
+    if not isinstance(value, list):
+        errors.append("time_window_sampled must be a list")
+        return []
+    if len(value) == 0:
+        return []
+    if len(value) != 2:
+        errors.append("time_window_sampled must be empty or contain exactly 2 values")
+        return []
+    start = int(value[0])
+    end = int(value[1])
+    if start < 0 or end < 0 or start >= num_sampled_frames or end >= num_sampled_frames:
+        errors.append(f"time_window_sampled out of range: {start}-{end}")
+        return []
+    if start > end:
+        errors.append(f"time_window_sampled start > end: {start}-{end}")
+        return []
+    return [start, end]
+
+
+def validate_structured_prediction(
+    prepared_sample: PreparedSample,
+    raw_output: str,
+    structured_prediction: dict[str, Any],
+    *,
+    structurer_raw_response: str | None = None,
+) -> StructuredPredictionResult:
     errors: list[str] = []
     warnings: list[str] = []
+    num_sampled_frames = len(prepared_sample.sampled_frames_original)
+    task_name = prepared_sample.task_name
 
     if task_name in TEXT_ONLY_TASKS:
-        text = _coerce_text(parsed)
-        if not text:
-            errors.append("missing text field")
-            normalized = None
-        else:
-            normalized = {"text": text}
-        return NormalizationResult(task_name, raw_output, normalized, errors, warnings)
+        validated = {"text": _coerce_text_field(structured_prediction, errors)}
+        return StructuredPredictionResult(
+            task_name=task_name,
+            raw_output=raw_output,
+            structured_prediction=(validated if not errors else None),
+            errors=errors,
+            warnings=warnings,
+            structurer_raw_response=structurer_raw_response,
+        )
 
     if task_name == TASK_SCOREBOARD_SINGLE:
-        text = _coerce_text(parsed)
-        bbox = _coerce_bbox(parsed, "bbox", "bounding_box", "box")
-        if not text:
-            errors.append("missing text field")
-        if bbox is None:
-            errors.append("missing bbox field")
-        normalized = {"text": text, "bbox": bbox} if not errors else None
-        return NormalizationResult(task_name, raw_output, normalized, errors, warnings)
+        validated = {
+            "text": _coerce_text_field(structured_prediction, errors),
+            "bbox": _coerce_box(structured_prediction.get("bbox"), "bbox", errors),
+        }
+        return StructuredPredictionResult(
+            task_name=task_name,
+            raw_output=raw_output,
+            structured_prediction=(validated if not errors else None),
+            errors=errors,
+            warnings=warnings,
+            structurer_raw_response=structurer_raw_response,
+        )
 
     if task_name == TASK_OBJECTS_SPATIAL:
-        text = _coerce_text(parsed)
-        bbox_a = _coerce_bbox(parsed, "bbox_a", "box_a")
-        bbox_b = _coerce_bbox(parsed, "bbox_b", "box_b")
-        if bbox_a is None and isinstance(parsed, dict) and isinstance(parsed.get("boxes"), list):
-            boxes = parsed["boxes"]
-            if len(boxes) == 2 and all(isinstance(box, list) and len(box) == 4 for box in boxes):
-                bbox_a = [float(value) for value in boxes[0]]
-                bbox_b = [float(value) for value in boxes[1]]
-        if not text:
-            errors.append("missing text field")
-        if bbox_a is None:
-            errors.append("missing bbox_a field")
-        if bbox_b is None:
-            errors.append("missing bbox_b field")
-        normalized = (
-            {"text": text, "bbox_a": bbox_a, "bbox_b": bbox_b} if not errors else None
+        validated = {
+            "text": _coerce_text_field(structured_prediction, errors),
+            "bbox_a": _coerce_box(structured_prediction.get("bbox_a"), "bbox_a", errors),
+            "bbox_b": _coerce_box(structured_prediction.get("bbox_b"), "bbox_b", errors),
+        }
+        return StructuredPredictionResult(
+            task_name=task_name,
+            raw_output=raw_output,
+            structured_prediction=(validated if not errors else None),
+            errors=errors,
+            warnings=warnings,
+            structurer_raw_response=structurer_raw_response,
         )
-        return NormalizationResult(task_name, raw_output, normalized, errors, warnings)
 
     if task_name in {TASK_CONTINUOUS_EVENTS, TASK_COMMENTARY}:
-        segments = _coerce_segments(parsed)
-        if segments is None:
-            errors.append("missing segments field")
-            normalized = None
-        else:
-            normalized = {"segments": segments}
-        return NormalizationResult(task_name, raw_output, normalized, errors, warnings)
+        validated = {
+            "segments": _coerce_segments(
+                structured_prediction.get("segments"),
+                num_sampled_frames,
+                errors,
+            )
+        }
+        return StructuredPredictionResult(
+            task_name=task_name,
+            raw_output=raw_output,
+            structured_prediction=(validated if not errors else None),
+            errors=errors,
+            warnings=warnings,
+            structurer_raw_response=structurer_raw_response,
+        )
 
     if task_name == TASK_CONTINUOUS_ACTIONS:
-        segments = _coerce_segments(parsed)
-        tracking = _coerce_tracking(parsed)
-        if segments is None:
-            errors.append("missing segments field")
-        if tracking is None:
-            errors.append("invalid tracking field")
-        normalized = (
-            {"segments": segments, "tracking": tracking if tracking is not None else []}
-            if not errors
-            else None
+        validated = {
+            "segments": _coerce_segments(
+                structured_prediction.get("segments"),
+                num_sampled_frames,
+                errors,
+            ),
+            "tracking": _coerce_tracking(
+                structured_prediction.get("tracking"),
+                num_sampled_frames,
+                errors,
+            ),
+        }
+        return StructuredPredictionResult(
+            task_name=task_name,
+            raw_output=raw_output,
+            structured_prediction=(validated if not errors else None),
+            errors=errors,
+            warnings=warnings,
+            structurer_raw_response=structurer_raw_response,
         )
-        return NormalizationResult(task_name, raw_output, normalized, errors, warnings)
 
     if task_name == TASK_STG:
-        if not isinstance(parsed, dict):
-            errors.append("prediction must be a JSON object")
-            return NormalizationResult(task_name, raw_output, None, errors, warnings)
-        window = parsed.get("time_window_sampled", parsed.get("time_window", parsed.get("window")))
-        tracking = _coerce_tracking(parsed)
-        if not isinstance(window, list) or len(window) != 2:
-            errors.append("missing time_window_sampled field")
-        if tracking is None:
-            errors.append("invalid tracking field")
-        normalized = (
-            {
-                "time_window_sampled": [int(window[0]), int(window[1])],
-                "tracking": tracking if tracking is not None else [],
-            }
-            if not errors
-            else None
+        validated = {
+            "time_window_sampled": _coerce_time_window(
+                structured_prediction.get("time_window_sampled"),
+                num_sampled_frames,
+                errors,
+            ),
+            "tracking": _coerce_tracking(
+                structured_prediction.get("tracking"),
+                num_sampled_frames,
+                errors,
+            ),
+        }
+        return StructuredPredictionResult(
+            task_name=task_name,
+            raw_output=raw_output,
+            structured_prediction=(validated if not errors else None),
+            errors=errors,
+            warnings=warnings,
+            structurer_raw_response=structurer_raw_response,
         )
-        return NormalizationResult(task_name, raw_output, normalized, errors, warnings)
 
-    errors.append(f"unsupported task for normalization: {task_name}")
-    return NormalizationResult(task_name, raw_output, None, errors, warnings)
+    errors.append(f"unsupported task for structured validation: {task_name}")
+    return StructuredPredictionResult(
+        task_name=task_name,
+        raw_output=raw_output,
+        structured_prediction=None,
+        errors=errors,
+        warnings=warnings,
+        structurer_raw_response=structurer_raw_response,
+    )
