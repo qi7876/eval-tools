@@ -20,12 +20,10 @@ The current implementation includes:
 - Chain manifest generation for Experiment B
 - Prepared-data generation for the main fixed-budget protocol and Experiment D fixed-budget ablations
 - Live adapter-based evaluation
-- Offline prediction replay
 - Task normalization and scoring
 - LLM-as-a-judge integration through an OpenAI-compatible API
 - Experiment A summary
 - Experiment B summary, including OracleTrack plumbing
-- Consolidated report generation
 
 It does not yet ship the 10 baseline adapters themselves. You plug models in through the adapter interface described below.
 
@@ -50,7 +48,7 @@ Key files:
 Generated directories:
 
 - `prepared_data/`: prepared sample bundles
-- `artifacts/`: predictions, per-sample results, summaries, and reports
+- `artifacts/`: run-time predictions and summaries
 
 ## Installation
 
@@ -116,7 +114,6 @@ Available commands:
 - `build-chain-manifest`
 - `prepare-data`
 - `run-eval`
-- `report`
 
 All operational parameters are now managed through TOML files. Each command reads only the section it needs from the TOML file you pass in.
 
@@ -129,16 +126,15 @@ That means:
 - raw data paths live in TOML
 - prepared-data paths live in TOML
 - protocol ids live in TOML
-- model adapter or offline prediction paths live in TOML
+- model adapter paths live in TOML
 - judge backend and sampling parameters live in TOML
 
 This makes it practical to maintain one config per experiment, per protocol, or per model.
 
 Example config files shipped with the repository:
 
-- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate, chain-manifest, prepare-data, report
+- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate, chain-manifest, prepare-data
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml): live adapter evaluation
-- [configs/examples/run_eval_predictions.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_predictions.toml): offline prediction replay
 - [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml): a separate Experiment D run config
 
 Supported top-level sections:
@@ -148,7 +144,6 @@ Supported top-level sections:
 - `[prepare_data]`
 - `[run_eval]`
 - `[judge]`
-- `[report]`
 
 Minimal example:
 
@@ -261,22 +256,16 @@ The cache is sample-centric. The runtime evaluation path reads from `prepared_da
 
 ### 4. Evaluate a model
 
-There are two supported evaluation modes:
+`run-eval` now uses live adapter mode only.
 
-- live adapter mode
-- offline prediction replay
+The runtime writes and resumes from four artifact files inside each run directory:
 
-Both modes use the same normalization, metrics, judge, and reporting logic after the prediction boundary.
+- `predictions.jsonl`: independent tasks and chain-upstream tasks
+- `results.jsonl`: completed evaluation records for those samples
+- `chain_predictions.jsonl`: chain-downstream raw outputs
+- `chain_results.jsonl`: completed evaluation records for chain-downstream samples
 
-### 5. Aggregate run summaries
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  report \
-  --config configs/examples/workflow.toml
-```
-
-This scans all run directories under `artifacts/runs` and writes a consolidated `report.json`.
+After each run, the framework recomputes the latest aggregate metrics and rewrites `summary.json`.
 
 ## Prepared-Data Protocol IDs
 
@@ -338,7 +327,7 @@ Each bundle stores a serialized `PreparedSample`. Important fields include:
 - `sample_id`
 - `task_name`
 - `protocol_id`
-- `prompt_text`
+- `question_text`
 - `sampled_frames_original`
 - `sampled_to_original`
 - `frame_files`
@@ -362,7 +351,7 @@ Protocol-level metadata:
 - dataset summary
 - dataset fingerprint
 - number of prepared samples
-- up to 100 dataset issues skipped during preparation
+- validated dataset metadata for the build
 
 ## Live Adapter Evaluation
 
@@ -378,14 +367,17 @@ Examples:
 ```toml
 [run_eval]
 adapter = "mock"
+prompt_root = "prompts/benchmark_v1"
 ```
 
 ```toml
 [run_eval]
 adapter = "my_project.adapters.qwen:QwenVideoAdapter"
+prompt_root = "prompts/benchmark_v1"
 ```
 
 The adapter class must be importable in the current Python environment.
+`[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 11 task Markdown templates.
 
 ### Adapter Interface
 
@@ -397,7 +389,7 @@ Required interface:
 from typing import Any
 
 from omnichain_eval.adapters.base import BaseModelAdapter
-from omnichain_eval.schema import PreparedSample
+from omnichain_eval.schema import ModelInput
 
 
 class MyAdapter(BaseModelAdapter):
@@ -413,30 +405,40 @@ class MyAdapter(BaseModelAdapter):
 
     def predict(
         self,
-        sample: PreparedSample,
-        *,
-        oracle_track: bool = False,
-        context: dict[str, Any] | None = None,
+        model_input: ModelInput,
     ) -> Any:
         ...
 ```
 
 ### What The Adapter Receives
 
-The `PreparedSample` object includes:
+The adapter now receives a `ModelInput` object. Important fields are:
 
-- `sample_id`: stable benchmark sample identifier
-- `task_name`: benchmark task name
-- `protocol_id`: sampling protocol used
-- `prompt_text`: question or query text
-- `frame_files`: absolute paths to prepared JPEG frames
-- `sampled_frames_original`: original frame indices for the prepared frames
-- `sampled_to_original`: sampled index -> original frame mapping
-- `reference_payload`: GT payload
+- `model_input.task_name`: benchmark task name
+- `model_input.frame_files`: absolute paths to prepared JPEG frames
+- `model_input.messages`: final rendered prompt messages, already built by the framework
+- `model_input.oracle_track`: whether this is an oracle rerun
+- `model_input.sample`: the full `PreparedSample`
+
+Inside `model_input.sample`, common fields include:
+
+- `sample_id`
+- `protocol_id`
+- `question_text`
+- `sampled_frames_original`
+- `sampled_to_original`
+- `reference_payload`
 - `q_window` or `a_window`
-- `metadata`: misc bundle metadata including bundle directory
+- `metadata`
 
-In normal model adapters you should ignore `reference_payload`, since it is GT. It is present because the framework also supports the built-in `mock` adapter and oracle-tracking workflows.
+In normal model adapters you should ignore `model_input.sample.reference_payload`, since it is GT. It is present because the framework also supports the built-in `mock` adapter and oracle-tracking workflows.
+
+For chain-downstream `Spatial_Imagination`, the framework automatically builds the final message list as:
+
+- `system`
+- `user`: upstream question
+- `assistant`: upstream answer
+- `user`: current downstream question
 
 ### What The Adapter Should Return
 
@@ -517,7 +519,7 @@ from pathlib import Path
 from typing import Any
 
 from omnichain_eval.adapters.base import BaseModelAdapter
-from omnichain_eval.schema import PreparedSample
+from omnichain_eval.schema import ModelInput
 
 
 class MyVideoAdapter(BaseModelAdapter):
@@ -530,13 +532,11 @@ class MyVideoAdapter(BaseModelAdapter):
 
     def predict(
         self,
-        sample: PreparedSample,
-        *,
-        oracle_track: bool = False,
-        context: dict[str, Any] | None = None,
+        model_input: ModelInput,
     ) -> Any:
-        image_paths = [Path(path) for path in sample.frame_files]
-        prompt = sample.prompt_text
+        image_paths = [Path(path) for path in model_input.frame_files]
+        messages = model_input.messages_as_dicts()
+        sample = model_input.sample
 
         # Replace this block with your real model call.
         # The result may be a dict or a JSON string.
@@ -572,41 +572,8 @@ base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
 invalid_json_retries = 2
+concurrency = 1
 ```
-
-## Offline Prediction Replay
-
-If you have already run inference elsewhere, you can score the results without writing an adapter.
-
-Input file format: JSONL
-
-Each row must contain:
-
-- `sample_id`
-- either `raw_output` or `normalized_prediction`
-- optional `protocol_id`
-
-Example:
-
-```json
-{"sample_id": "Sport/Event/1#1", "raw_output": {"text": "The score is 1-0.", "bbox": [10, 20, 200, 80]}}
-{"sample_id": "Sport/Event/1#4", "raw_output": {"text": "The athlete moves from left to right."}}
-{"sample_id": "Sport/Event/1#5", "raw_output": {"segments": [{"start_sampled": 0, "end_sampled": 2, "text": "The athlete jogs into the frame."}]}}
-```
-
-Evaluate:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --config configs/examples/run_eval_predictions.toml
-```
-
-Notes:
-
-- if `normalized_prediction` is present, the runner prefers it over `raw_output`
-- normalization is still applied during scoring
-- if a sample is missing from the file, it is evaluated as missing output and will fail deterministically
 
 ## Judge Configuration
 
@@ -627,6 +594,7 @@ max_tokens = 256
 n = 1
 seed = 42
 invalid_json_retries = 2
+concurrency = 1
 ```
 
 Then export only the secret:
@@ -656,7 +624,8 @@ Retry behavior:
 - if the judge response is not valid JSON, the framework retries
 - if the judge response is valid JSON but has missing keys, wrong field names, empty required fields, or non-binary score fields, the framework also retries
 - retry count is controlled by `[judge].invalid_json_retries`
-- if all attempts still return malformed judge responses, that sample is deferred to the next run; its prediction stays in `predictions.jsonl`, but no formal row is written to `sample_results.jsonl` this round
+- if all attempts still return malformed judge responses, that sample is deferred to the next run; its prediction artifact remains, but no completed result row is written this round
+- judge execution runs asynchronously in the background; `[judge].concurrency` controls the number of concurrent evaluation workers
 
 ## Resume Evaluation
 
@@ -664,11 +633,14 @@ Retry behavior:
 
 Behavior:
 
-- predictions are appended to `predictions.jsonl` as each sample finishes inference
-- per-sample results are appended to `sample_results.jsonl` as each sample finishes evaluation
+- predictions for independent tasks and chain-upstream tasks are appended to `predictions.jsonl`
+- completed evaluation records for those samples are appended to `results.jsonl`
+- chain-downstream predictions are appended to `chain_predictions.jsonl`
+- completed chain-downstream evaluation records are appended to `chain_results.jsonl`
 - if the process is interrupted, rerunning the same config will skip completed samples
 - if interruption happened after prediction was written but before scoring finished, the runner reuses the saved prediction and only reruns scoring
-- resumability is derived from `prepared_data` plus the current `predictions.jsonl` and `sample_results.jsonl`, not from a separate failure list
+- if a chain-upstream answer is missing, the corresponding chain-downstream sample remains blocked until the next run
+- resumability is derived from those four artifact files, not from a separate failure list
 
 Important:
 
@@ -695,32 +667,33 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 Files:
 
 - `predictions.jsonl`
-- `sample_results.jsonl`
-- `run_status.json`
-- `task_summaries.json`
+- `results.jsonl`
+- `chain_predictions.jsonl`
+- `chain_results.jsonl`
 - `summary.json`
 
 Artifact semantics:
 
-- `predictions.jsonl` stores raw model outputs already obtained for samples in this run directory
-- `sample_results.jsonl` stores only completed evaluation records
-- if a sample already has a prediction but judge or scoring did not complete, it remains absent from `sample_results.jsonl` and will be retried on the next run
+- `predictions.jsonl` stores raw model outputs for independent tasks and chain-upstream tasks
+- `results.jsonl` stores completed evaluation records for those samples
+- `chain_predictions.jsonl` stores raw model outputs for chain-downstream samples
+- `chain_results.jsonl` stores completed evaluation records for chain-downstream samples
+- if a sample already has a prediction but judge or scoring did not complete, it remains absent from its corresponding `*_results.jsonl` file and will be retried on the next run
 
-`run_status.json` contains:
+`summary.json` includes:
 
 - total target sample count for this run
 - completed counts before this invocation, in this invocation, and in total
 - `pending_prediction_sample_ids`
 - `predicted_not_evaluated_sample_ids`
-- error summaries for prediction, evaluation, and oracle evaluation in this invocation
-
-`summary.json` includes:
-
 - `overall`
 - per-task summaries
 - `experiment_b` if a chain manifest was provided
 - whether commentary was supported
-- `run_status` copied from `run_status.json`
+- `pending_chain_prediction_sample_ids`
+- `chain_predicted_not_evaluated_sample_ids`
+- `blocked_chain_sample_ids`
+- error summaries for normal, chain, and oracle evaluation in this invocation
 
 `Commentary` is reported separately and excluded from `overall`.
 
@@ -786,28 +759,12 @@ What the framework does:
 
 - reruns the upstream and downstream pair through the adapter
 - sets `oracle_track=True` in the adapter call
-- also passes `context={"chain_pair": ..., "role": "upstream" | "downstream"}`
+- also passes chain metadata through `context`
 - replaces tracking with GT during upstream scoring where the task requires it
-
-### Offline mode
-
-If you do not use a live adapter, provide a second prediction file:
-
-```toml
-[run_eval]
-predictions = "artifacts/base_predictions.jsonl"
-oracle_predictions = "artifacts/oracle_predictions.jsonl"
-chain_manifest = "artifacts/chain_pairs.jsonl"
-```
-
-The framework does not synthesize oracle reruns from the base predictions. You must provide explicit oracle outputs.
 
 ## Commentary Support
 
-If a model does not support `Commentary`, there are two paths:
-
-- in live adapter mode, return `False` from `supports_commentary()`
-- in offline mode, set `[run_eval].commentary_unsupported = true`
+If a model does not support `Commentary`, return `False` from `supports_commentary()`.
 
 Effect:
 
@@ -874,14 +831,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
-### Score an offline JSONL export
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --config configs/examples/run_eval_predictions.toml
-```
-
 ### Build all fixed-budget caches in advance
 
 ```bash
@@ -899,11 +848,11 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 1. Create a dedicated TOML file for the model and protocol you want to evaluate.
 2. Run `prepare-data` for the protocol(s) you need.
 3. Implement a `BaseModelAdapter` subclass in your own importable module.
-4. Make the adapter consume `sample.frame_files` and `sample.prompt_text`.
+4. Point `[run_eval].prompt_root` to your prompt pack and make the adapter consume `model_input.frame_files` and `model_input.messages`.
 5. Return task outputs in the benchmark’s sampled-frame coordinate space.
 6. Run `run-eval --config your_model.toml` on `main`.
 7. Set `[run_eval].chain_manifest` to get Experiment B metrics.
 8. If needed, implement `supports_oracle_track()` and handle `oracle_track=True`.
 9. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
 
-If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, normalization, scoring, reporting, and chain accounting remain inside the framework.
+If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, normalization, scoring, summary generation, and chain accounting remain inside the framework.

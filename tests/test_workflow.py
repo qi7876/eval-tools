@@ -12,9 +12,11 @@ from omnichain_eval.experiments import (
 )
 from omnichain_eval.judge import StaticJudgeClient
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
+from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mini_data"
+PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_v1"
 
 
 def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
@@ -54,7 +56,13 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
     }
 
     adapter = MockAdapter()
-    prediction_map = {sample.sample_id: adapter.predict(sample) for sample in main_samples}
+    prompt_pack = load_prompt_pack(PROMPT_ROOT)
+    prediction_map = {
+        sample.sample_id: adapter.predict(
+            build_model_input(sample, render_prompt(prompt_pack, sample))
+        )
+        for sample in main_samples
+    }
     evaluation = evaluate_prepared_predictions(
         main_samples,
         prediction_map,

@@ -13,7 +13,6 @@ from .constants import (
     STG_EXPANSION_FRAMES,
     TASK_STG,
     VIDEO_FPS,
-    WINDOW_TASKS,
 )
 from .schema import ProtocolSpec, SampleRecord
 from .utils import clip_index

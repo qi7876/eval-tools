@@ -11,17 +11,13 @@ from .constants import (
     SEGMENT_TASKS,
     SINGLE_FRAME_TASKS,
     STG_UPSTREAM_TASKS,
-    TASK_AI_COACH,
     TASK_COMMENTARY,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
-    TASK_SCOREBOARD_MULTIPLE,
     TASK_SCOREBOARD_SINGLE,
-    TASK_SCORE_PREDICTION,
     TASK_SPATIAL_IMAGINATION,
     TASK_STG,
-    TASK_TEMPORAL_CAUSAL,
     TASKS_EXCLUDED_FROM_OVERALL,
     TEXT_ONLY_TASKS,
     VIDEO_FPS,
@@ -166,7 +162,7 @@ def build_reference_payload(
     raise ValueError(f"unsupported task for GT building: {task_name}")
 
 
-def _prompt_text(annotation: dict[str, Any]) -> str:
+def _question_text(annotation: dict[str, Any]) -> str:
     if "question" in annotation:
         return str(annotation["question"])
     if "query" in annotation:
@@ -221,7 +217,7 @@ def load_annotation_file(
                 video_key=build_video_key(annotation_path, data_root),
                 task_name=task_name,
                 task_level=str(annotation["task_L1"]),
-                prompt_text=_prompt_text(annotation),
+                question_text=_question_text(annotation),
                 source_annotation_path=annotation_path,
                 source_video_path=video_path,
                 video_metadata=video_metadata,

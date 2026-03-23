@@ -29,6 +29,15 @@ dev = [
 [project.scripts]
 omnichain-eval = "omnichain_eval.cli:main"
 
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple/"
+default = true
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.7",
+]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

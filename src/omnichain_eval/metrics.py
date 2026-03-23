@@ -25,7 +25,7 @@ from .constants import (
 )
 from .judge import JudgeClient, default_judge_fail
 from .normalize import normalize_prediction
-from .schema import EvaluationRecord, JudgeDecision, NormalizationResult, PreparedSample, TaskSummary
+from .schema import EvaluationRecord, JudgeDecision, PreparedSample, TaskSummary
 
 
 def bbox_iou(box_pred: list[float], box_gt: list[float]) -> float:
@@ -232,7 +232,7 @@ def _judge_textual_task(
     )
     decision = judge_client.judge(
         task_name,
-        prepared_sample.prompt_text,
+        prepared_sample.question_text,
         reference_payload,
         prediction_payload,
     )

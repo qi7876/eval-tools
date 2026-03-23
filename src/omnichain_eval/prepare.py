@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - environment dependent
 import cv2
 from PIL import Image
 
-from .dataset import dataset_fingerprint, scan_dataset, summarize_records
+from .dataset import dataset_fingerprint, load_dataset, summarize_records
 from .protocols import (
     get_protocol,
     original_interval_to_sampled_interval,
@@ -187,7 +187,7 @@ def build_prepared_sample(
         task_name=sample.task_name,
         task_level=sample.task_level,
         protocol_id=protocol.protocol_id,
-        prompt_text=sample.prompt_text,
+        question_text=sample.question_text,
         sampled_frames_original=sampled_frames_original,
         sampled_to_original=sampled_to_original_mapping(sampled_frames_original),
         frame_files=frame_files,
@@ -303,7 +303,7 @@ def build_prepared_data(
     prepared_root: Path,
     protocol_ids: list[str],
 ) -> list[dict[str, Any]]:
-    records, issues = scan_dataset(data_root)
+    records = load_dataset(data_root, strict=True)
     results = []
     for protocol_id in protocol_ids:
         protocol = get_protocol(protocol_id)
@@ -312,7 +312,7 @@ def build_prepared_data(
                 records,
                 protocol,
                 prepared_root,
-                dataset_issues=issues,
+                dataset_issues=[],
             )
         )
     return results

@@ -15,7 +15,7 @@ from ..constants import (
     TASK_STG,
     TEXT_ONLY_TASKS,
 )
-from ..schema import PreparedSample
+from ..schema import ModelInput
 
 
 class BaseModelAdapter(ABC):
@@ -34,10 +34,7 @@ class BaseModelAdapter(ABC):
     @abstractmethod
     def predict(
         self,
-        sample: PreparedSample,
-        *,
-        oracle_track: bool = False,
-        context: dict[str, Any] | None = None,
+        model_input: ModelInput,
     ) -> Any:
         raise NotImplementedError
 
@@ -50,11 +47,10 @@ class MockAdapter(BaseModelAdapter):
 
     def predict(
         self,
-        sample: PreparedSample,
-        *,
-        oracle_track: bool = False,
-        context: dict[str, Any] | None = None,
+        model_input: ModelInput,
     ) -> Any:
+        sample = model_input.sample
+        oracle_track = model_input.oracle_track
         reference = sample.reference_payload
         if sample.task_name in TEXT_ONLY_TASKS:
             return {"text": reference["text"]}

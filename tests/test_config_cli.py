@@ -16,6 +16,7 @@ def test_load_run_eval_config_resolves_paths_and_judge_options(tmp_path):
 prepared_root = "../prepared_data"
 protocol = "main"
 artifacts_root = "../artifacts/runs"
+prompt_root = "../prompts/benchmark_v1"
 run_name = "demo-run"
 model_name = "demo-model"
 adapter = "mock"
@@ -34,6 +35,7 @@ max_tokens = 512
 n = 2
 seed = 7
 invalid_json_retries = 3
+concurrency = 2
 """.strip(),
         encoding="utf-8",
     )
@@ -43,6 +45,7 @@ invalid_json_retries = 3
     assert config.prepared_root == (tmp_path / "prepared_data").resolve()
     assert config.protocol == "main"
     assert config.artifacts_root == (tmp_path / "artifacts" / "runs").resolve()
+    assert config.prompt_root == (tmp_path / "prompts" / "benchmark_v1").resolve()
     assert config.run_name == "demo-run"
     assert config.model_name == "demo-model"
     assert config.adapter == "mock"
@@ -59,9 +62,10 @@ invalid_json_retries = 3
     assert config.judge.n == 2
     assert config.judge.seed == 7
     assert config.judge.invalid_json_retries == 3
+    assert config.judge.concurrency == 2
 
 
-def test_load_run_eval_config_requires_exactly_one_source(tmp_path):
+def test_load_run_eval_config_requires_adapter(tmp_path):
     config_path = tmp_path / "invalid.toml"
     config_path.write_text(
         """
@@ -72,7 +76,23 @@ protocol = "main"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match="exactly one of adapter or predictions"):
+    with pytest.raises(ValueError, match=r"\[run_eval\]\.adapter is required"):
+        load_run_eval_config(config_path)
+
+
+def test_load_run_eval_config_requires_prompt_root(tmp_path):
+    config_path = tmp_path / "invalid.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+adapter = "mock"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[run_eval\]\.prompt_root is required"):
         load_run_eval_config(config_path)
 
 

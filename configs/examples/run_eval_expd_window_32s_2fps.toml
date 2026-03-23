@@ -2,6 +2,7 @@
 prepared_root = "../../prepared_data"
 protocol = "expd_window_32s_2fps"
 artifacts_root = "../../artifacts/runs"
+prompt_root = "../../prompts/benchmark_v1"
 run_name = "baseline-expd-window-32s-2fps"
 model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
@@ -21,3 +22,4 @@ max_tokens = 256
 n = 1
 seed = 42
 invalid_json_retries = 2
+concurrency = 1

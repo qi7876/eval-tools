@@ -56,7 +56,7 @@ def test_openai_judge_retries_invalid_json_before_accepting_valid_response(monke
 
     decision = judge_client.judge(
         task_name="Commentary",
-        prompt_text="Describe the play.",
+        question_text="Describe the play.",
         reference_payload={"segments": [{"text": "A score."}]},
         prediction_payload={"segments": [{"text": "A score."}]},
     )
@@ -108,7 +108,7 @@ def test_openai_judge_retries_schema_errors(monkeypatch):
 
     decision = judge_client.judge(
         task_name="Commentary",
-        prompt_text="Describe the play.",
+        question_text="Describe the play.",
         reference_payload={"segments": [{"text": "A score."}]},
         prediction_payload={"segments": [{"text": "A score."}]},
     )
@@ -149,7 +149,7 @@ def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
     with pytest.raises(JudgeResponseFormatExhaustedError, match="did not match schema"):
         judge_client.judge(
             task_name="Commentary",
-            prompt_text="Describe the play.",
+            question_text="Describe the play.",
             reference_payload={"segments": [{"text": "A score."}]},
             prediction_payload={"segments": [{"text": "A score."}]},
         )

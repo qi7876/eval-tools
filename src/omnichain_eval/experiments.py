@@ -1,4 +1,4 @@
-"""Experiment orchestration and reporting helpers."""
+"""Experiment orchestration helpers."""
 
 from __future__ import annotations
 
@@ -14,17 +14,17 @@ from .constants import (
     TASK_STG,
     TASKS_EXCLUDED_FROM_OVERALL,
 )
-from .dataset import scan_dataset
+from .dataset import load_dataset
 from .judge import JudgeClient
 from .metrics import evaluate_sample, summarize_task_records
+from .prompting import PromptTemplate, build_chain_history, build_model_input, render_prompt
 from .prepare import load_prepared_samples
 from .schema import ChainPairRecord, EvaluationRecord, PreparedSample, TaskSummary
 from .utils import read_jsonl, write_jsonl
 
 
 def build_chain_manifest(data_root: Path, output_path: Path) -> list[ChainPairRecord]:
-    records, _issues = scan_dataset(data_root)
-    by_sample_id = {record.sample_id: record for record in records}
+    records = load_dataset(data_root, strict=True)
     by_source_file: dict[Path, dict[str, Any]] = defaultdict(dict)
     for record in records:
         by_source_file[record.source_annotation_path][record.annotation_id] = record
@@ -176,6 +176,7 @@ def evaluate_oracle_chain(
     prepared_by_sample_id: dict[str, PreparedSample],
     chain_pairs: list[ChainPairRecord],
     *,
+    prompt_pack: dict[str, PromptTemplate],
     judge_client: JudgeClient | None,
 ) -> dict[str, dict[str, EvaluationRecord]]:
     pair_results: dict[str, dict[str, EvaluationRecord]] = {}
@@ -183,14 +184,20 @@ def evaluate_oracle_chain(
         upstream_sample = prepared_by_sample_id[pair.upstream_sample_id]
         downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
         upstream_raw = adapter.predict(
-            upstream_sample,
-            oracle_track=True,
-            context={"chain_pair": pair.to_dict(), "role": "upstream"},
+            build_model_input(
+                upstream_sample,
+                render_prompt(prompt_pack, upstream_sample, oracle_track=True),
+                oracle_track=True,
+            )
         )
+        conversation_history = build_chain_history(upstream_sample, upstream_raw)
         downstream_raw = adapter.predict(
-            downstream_sample,
-            oracle_track=True,
-            context={"chain_pair": pair.to_dict(), "role": "downstream"},
+            build_model_input(
+                downstream_sample,
+                render_prompt(prompt_pack, downstream_sample, oracle_track=True),
+                oracle_track=True,
+                conversation_history=conversation_history,
+            )
         )
         pair_results[pair.pair_id] = {
             "upstream": evaluate_sample(

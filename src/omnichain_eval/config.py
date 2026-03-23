@@ -72,6 +72,7 @@ class JudgeConfig:
     n: int = 1
     seed: int = 42
     invalid_json_retries: int = 0
+    concurrency: int = 1
 
     def resolved_base_url(self) -> str | None:
         if self.base_url:
@@ -89,6 +90,7 @@ class RunEvalConfig:
     prepared_root: Path = Path("prepared_data")
     protocol: str = "main"
     artifacts_root: Path = Path("artifacts/runs")
+    prompt_root: Path | None = None
     run_name: str | None = None
     model_name: str | None = None
     chain_manifest: Path | None = None
@@ -96,15 +98,7 @@ class RunEvalConfig:
     enable_bertscore: bool = False
     commentary_unsupported: bool = False
     adapter: str | None = None
-    predictions: Path | None = None
-    oracle_predictions: Path | None = None
     judge: JudgeConfig = field(default_factory=JudgeConfig)
-
-
-@dataclass(slots=True)
-class ReportConfig:
-    artifacts_root: Path = Path("artifacts/runs")
-    out: Path | None = None
 
 
 def load_validate_data_config(path: Path) -> ValidateDataConfig:
@@ -160,11 +154,14 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
         n=int(table.get("n", 1)),
         seed=int(table.get("seed", 42)),
         invalid_json_retries=int(table.get("invalid_json_retries", 0)),
+        concurrency=int(table.get("concurrency", 1)),
     )
     if config.backend not in {"openai", "static-pass", "static-fail"}:
         raise ValueError("[judge].backend must be one of: openai, static-pass, static-fail")
     if config.invalid_json_retries < 0:
         raise ValueError("[judge].invalid_json_retries must be >= 0")
+    if config.concurrency < 1:
+        raise ValueError("[judge].concurrency must be >= 1")
     return config
 
 
@@ -183,6 +180,7 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
             table.get("artifacts_root"),
             default="artifacts/runs",
         ),  # type: ignore[arg-type]
+        prompt_root=_resolve_path(base_dir, table.get("prompt_root")),
         run_name=table.get("run_name"),
         model_name=table.get("model_name"),
         chain_manifest=_resolve_path(base_dir, table.get("chain_manifest")),
@@ -190,23 +188,10 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
         enable_bertscore=bool(table.get("enable_bertscore", False)),
         commentary_unsupported=bool(table.get("commentary_unsupported", False)),
         adapter=table.get("adapter"),
-        predictions=_resolve_path(base_dir, table.get("predictions")),
-        oracle_predictions=_resolve_path(base_dir, table.get("oracle_predictions")),
         judge=_load_judge_config(base_dir, payload),
     )
-    if bool(config.adapter) == bool(config.predictions):
-        raise ValueError("[run_eval] must set exactly one of adapter or predictions")
+    if not config.adapter:
+        raise ValueError("[run_eval].adapter is required")
+    if config.prompt_root is None:
+        raise ValueError("[run_eval].prompt_root is required")
     return config
-
-
-def load_report_config(path: Path) -> ReportConfig:
-    payload, base_dir = _load_toml(path)
-    table = _table(payload, "report")
-    return ReportConfig(
-        artifacts_root=_resolve_path(
-            base_dir,
-            table.get("artifacts_root"),
-            default="artifacts/runs",
-        ),  # type: ignore[arg-type]
-        out=_resolve_path(base_dir, table.get("out")),
-    )

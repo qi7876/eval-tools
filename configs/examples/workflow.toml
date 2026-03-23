@@ -17,7 +17,3 @@ protocols = [
   "expd_fps_32s_2fps",
   "expd_fps_32s_4fps",
 ]
-
-[report]
-artifacts_root = "../../artifacts/runs"
-out = "../../artifacts/report.json"

@@ -16,7 +16,7 @@ def build_sample(task_name: str, **kwargs) -> SampleRecord:
         video_key="video",
         task_name=task_name,
         task_level="Understanding",
-        prompt_text="test",
+        question_text="test",
         source_annotation_path=Path("video.json"),
         source_video_path=Path("video.mp4"),
         video_metadata=VideoMetadata(10.0, 10, 1000, (1920, 1080)),

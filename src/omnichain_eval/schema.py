@@ -27,7 +27,7 @@ class SampleRecord:
     video_key: str
     task_name: str
     task_level: str
-    prompt_text: str
+    question_text: str
     source_annotation_path: Path
     source_video_path: Path
     video_metadata: VideoMetadata
@@ -67,7 +67,7 @@ class PreparedSample:
     task_name: str
     task_level: str
     protocol_id: str
-    prompt_text: str
+    question_text: str
     sampled_frames_original: list[int]
     sampled_to_original: dict[int, int]
     frame_files: list[str]
@@ -97,7 +97,7 @@ class PreparedSample:
             task_name=payload["task_name"],
             task_level=payload["task_level"],
             protocol_id=payload["protocol_id"],
-            prompt_text=payload["prompt_text"],
+            question_text=payload["question_text"],
             sampled_frames_original=[int(value) for value in payload["sampled_frames_original"]],
             sampled_to_original=sampled_to_original,
             frame_files=list(payload["frame_files"]),
@@ -112,6 +112,36 @@ class PreparedSample:
             upstream_annotation_id=payload.get("upstream_annotation_id"),
             metadata=payload.get("metadata", {}),
         )
+
+
+@dataclass(slots=True)
+class PromptMessage:
+    role: str
+    content: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"role": self.role, "content": self.content}
+
+
+@dataclass(slots=True)
+class RenderedPrompt:
+    task_name: str
+    template_path: str
+    system_prompt: str
+    user_prompt: str
+    variables: dict[str, Any]
+
+
+@dataclass(slots=True)
+class ModelInput:
+    sample: PreparedSample
+    task_name: str
+    frame_files: list[str]
+    messages: list[PromptMessage]
+    oracle_track: bool = False
+
+    def messages_as_dicts(self) -> list[dict[str, str]]:
+        return [message.to_dict() for message in self.messages]
 
 
 @dataclass(slots=True)

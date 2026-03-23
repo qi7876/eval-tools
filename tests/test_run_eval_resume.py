@@ -5,13 +5,17 @@ from PIL import Image
 
 from omnichain_eval.adapters.base import BaseModelAdapter, MockAdapter
 from omnichain_eval.cli import main
+from omnichain_eval.experiments import build_chain_manifest
 from omnichain_eval.judge import JudgeClient, JudgeResponseFormatExhaustedError, StaticJudgeClient
 from omnichain_eval.metrics import evaluate_sample
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
+from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
+from omnichain_eval.schema import ModelInput
 from omnichain_eval.utils import write_jsonl
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mini_data"
+PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_v1"
 
 
 def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
@@ -21,11 +25,20 @@ def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
     }
 
 
+def build_test_model_input(sample, *, oracle_track: bool = False) -> ModelInput:
+    prompt_pack = load_prompt_pack(PROMPT_ROOT)
+    return build_model_input(
+        sample,
+        render_prompt(prompt_pack, sample, oracle_track=oracle_track),
+        oracle_track=oracle_track,
+    )
+
+
 class AlwaysBrokenJudge(JudgeClient):
     def judge(
         self,
         task_name: str,
-        prompt_text: str,
+        question_text: str,
         reference_payload: dict,
         prediction_payload: dict,
     ):
@@ -38,6 +51,7 @@ class CountingAdapter(BaseModelAdapter):
     def __init__(self) -> None:
         self._mock = MockAdapter()
         self.calls: list[str] = []
+        self.inputs: dict[str, list[ModelInput]] = {}
 
     @property
     def name(self) -> str:
@@ -46,9 +60,34 @@ class CountingAdapter(BaseModelAdapter):
     def supports_commentary(self) -> bool:
         return True
 
-    def predict(self, sample, *, oracle_track: bool = False, context: dict | None = None):
-        self.calls.append(sample.sample_id)
-        return self._mock.predict(sample, oracle_track=oracle_track, context=context)
+    def predict(self, model_input: ModelInput):
+        sample_id = model_input.sample.sample_id
+        self.calls.append(sample_id)
+        self.inputs.setdefault(sample_id, []).append(model_input)
+        return self._mock.predict(model_input)
+
+
+def _config_text(
+    *,
+    prepared_root: Path,
+    artifacts_root: Path,
+    run_name: str,
+    chain_manifest: Path | None,
+) -> str:
+    chain_manifest_line = f'chain_manifest = "{chain_manifest}"\n' if chain_manifest else ""
+    return f"""
+[run_eval]
+prepared_root = "{prepared_root}"
+protocol = "main"
+artifacts_root = "{artifacts_root}"
+prompt_root = "{PROMPT_ROOT}"
+run_name = "{run_name}"
+adapter = "mock"
+{chain_manifest_line}
+
+[judge]
+backend = "static-pass"
+""".strip()
 
 
 def test_evaluate_sample_skips_question_when_judge_format_errors_are_exhausted(
@@ -70,7 +109,7 @@ def test_evaluate_sample_skips_question_when_judge_format_errors_are_exhausted(
     try:
         evaluate_sample(
             sample,
-            MockAdapter().predict(sample),
+            MockAdapter().predict(build_test_model_input(sample)),
             judge_client=AlwaysBrokenJudge(),
         )
     except JudgeResponseFormatExhaustedError as exc:
@@ -79,21 +118,23 @@ def test_evaluate_sample_skips_question_when_judge_format_errors_are_exhausted(
         raise AssertionError("expected JudgeResponseFormatExhaustedError")
 
 
-def test_run_eval_resumes_from_existing_sample_results(monkeypatch, tmp_path):
+def test_run_eval_resumes_from_existing_results(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "omnichain_eval.prepare.decode_selected_frames",
         fake_decode_selected_frames,
     )
     prepared_root = tmp_path / "prepared"
     artifacts_root = tmp_path / "artifacts" / "runs"
+    chain_manifest_path = tmp_path / "chain_pairs.jsonl"
     build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
     prepared_samples = load_prepared_samples(prepared_root, "main")
     adapter = CountingAdapter()
 
     run_dir = artifacts_root / "resume-run"
     run_dir.mkdir(parents=True, exist_ok=True)
-    first_sample = prepared_samples[0]
-    first_raw_output = adapter._mock.predict(first_sample)
+    first_sample = next(sample for sample in prepared_samples if sample.task_name != "Spatial_Imagination")
+    first_raw_output = adapter._mock.predict(build_test_model_input(first_sample))
     first_record = evaluate_sample(
         first_sample,
         first_raw_output,
@@ -109,21 +150,16 @@ def test_run_eval_resumes_from_existing_sample_results(monkeypatch, tmp_path):
             }
         ],
     )
-    write_jsonl(run_dir / "sample_results.jsonl", [first_record.to_dict()])
+    write_jsonl(run_dir / "results.jsonl", [first_record.to_dict()])
 
     config_path = tmp_path / "run_eval.toml"
     config_path.write_text(
-        f"""
-[run_eval]
-prepared_root = "{prepared_root}"
-protocol = "main"
-artifacts_root = "{artifacts_root}"
-run_name = "resume-run"
-adapter = "mock"
-
-[judge]
-backend = "static-pass"
-""".strip(),
+        _config_text(
+            prepared_root=prepared_root,
+            artifacts_root=artifacts_root,
+            run_name="resume-run",
+            chain_manifest=chain_manifest_path,
+        ),
         encoding="utf-8",
     )
 
@@ -135,10 +171,14 @@ backend = "static-pass"
     assert first_sample.sample_id not in adapter.calls
     assert len(adapter.calls) == len(prepared_samples) - 1
 
-    sample_result_rows = (run_dir / "sample_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    sample_result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
     prediction_rows = (run_dir / "predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(sample_result_rows) == len(prepared_samples)
-    assert len(prediction_rows) == len(prepared_samples)
+    chain_prediction_rows = (
+        run_dir / "chain_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
+    chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(sample_result_rows) + len(chain_result_rows) == len(prepared_samples)
+    assert len(prediction_rows) + len(chain_prediction_rows) == len(prepared_samples)
 
 
 def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkeypatch, tmp_path):
@@ -148,23 +188,20 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
     )
     prepared_root = tmp_path / "prepared"
     artifacts_root = tmp_path / "artifacts" / "runs"
+    chain_manifest_path = tmp_path / "chain_pairs.jsonl"
     build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
     adapter = CountingAdapter()
 
     config_path = tmp_path / "run_eval.toml"
     config_path.write_text(
-        f"""
-[run_eval]
-prepared_root = "{prepared_root}"
-protocol = "main"
-artifacts_root = "{artifacts_root}"
-run_name = "retry-run"
-adapter = "mock"
-
-[judge]
-backend = "static-pass"
-invalid_json_retries = 1
-""".strip(),
+        _config_text(
+            prepared_root=prepared_root,
+            artifacts_root=artifacts_root,
+            run_name="retry-run",
+            chain_manifest=chain_manifest_path,
+        )
+        + "\ninvalid_json_retries = 1\n",
         encoding="utf-8",
     )
 
@@ -175,16 +212,18 @@ invalid_json_retries = 1
         def judge(
             self,
             task_name: str,
-            prompt_text: str,
+            question_text: str,
             reference_payload: dict,
             prediction_payload: dict,
         ):
             self.calls += 1
             if self.calls == 1:
-                raise JudgeResponseFormatExhaustedError("judge response did not match schema after 2 attempt(s)")
+                raise JudgeResponseFormatExhaustedError(
+                    "judge response did not match schema after 2 attempt(s)"
+                )
             return StaticJudgeClient(always_pass=True).judge(
                 task_name,
-                prompt_text,
+                question_text,
                 reference_payload,
                 prediction_payload,
             )
@@ -196,8 +235,8 @@ invalid_json_retries = 1
 
     assert first_exit_code == 0
     run_dir = artifacts_root / "retry-run"
-    first_status = json.loads((run_dir / "run_status.json").read_text(encoding="utf-8"))
-    assert first_status["predicted_not_evaluated_samples_total"] == 1
+    first_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    first_status = first_summary["run_status"]
     pending_ids = first_status["predicted_not_evaluated_sample_ids"]
     assert len(pending_ids) == 1
 
@@ -211,9 +250,103 @@ invalid_json_retries = 1
 
     assert second_exit_code == 0
     assert adapter.calls == []
-    second_status = json.loads((run_dir / "run_status.json").read_text(encoding="utf-8"))
-    assert second_status["predicted_not_evaluated_samples_total"] == 0
-    sample_result_rows = (run_dir / "sample_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    second_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    second_status = second_summary["run_status"]
+    assert second_status["predicted_not_evaluated_sample_ids"] == []
+    sample_result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
     prediction_rows = (run_dir / "predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(sample_result_rows) == len(load_prepared_samples(prepared_root, "main"))
-    assert len(prediction_rows) == len(load_prepared_samples(prepared_root, "main"))
+    chain_prediction_rows = (
+        run_dir / "chain_predictions.jsonl"
+    ).read_text(encoding="utf-8").strip().splitlines()
+    chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(sample_result_rows) + len(chain_result_rows) == len(load_prepared_samples(prepared_root, "main"))
+    assert len(prediction_rows) + len(chain_prediction_rows) == len(load_prepared_samples(prepared_root, "main"))
+
+
+def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    artifacts_root = tmp_path / "artifacts" / "runs"
+    chain_manifest_path = tmp_path / "chain_pairs.jsonl"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
+    adapter = CountingAdapter()
+
+    config_path = tmp_path / "run_eval.toml"
+    config_path.write_text(
+        _config_text(
+            prepared_root=prepared_root,
+            artifacts_root=artifacts_root,
+            run_name="chain-run",
+            chain_manifest=chain_manifest_path,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("omnichain_eval.cli.resolve_adapter", lambda spec: adapter)
+
+    exit_code = main(["run-eval", "--config", str(config_path)])
+
+    assert exit_code == 0
+    run_dir = artifacts_root / "chain-run"
+    prediction_rows = (run_dir / "predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    chain_prediction_rows = (run_dir / "chain_predictions.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    chain_result_rows = (run_dir / "chain_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+
+    assert len(prediction_rows) == 4
+    assert len(result_rows) == 4
+    assert len(chain_prediction_rows) == 1
+    assert len(chain_result_rows) == 1
+
+    downstream_sample_id = "TestSport/TestEvent/1#4"
+    downstream_inputs = adapter.inputs[downstream_sample_id]
+    assert len(downstream_inputs) == 1
+    model_input = downstream_inputs[0]
+    messages = model_input.messages_as_dicts()
+    upstream_sample = next(
+        sample
+        for sample in load_prepared_samples(prepared_root, "main")
+        if sample.sample_id == "TestSport/TestEvent/1#2"
+    )
+    expected_upstream_output = MockAdapter().predict(build_test_model_input(upstream_sample))
+    assert [message["role"] for message in messages] == ["system", "user", "assistant", "user"]
+    assert messages[1]["content"] == "Describe the athlete actions."
+    assert messages[2]["content"] == json.dumps(expected_upstream_output, ensure_ascii=False)
+
+    summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["run_status"]["pending_chain_prediction_sample_ids"] == []
+    assert summary["run_status"]["blocked_chain_sample_ids"] == []
+
+
+def test_run_eval_requires_chain_manifest_for_spatial_imagination(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    artifacts_root = tmp_path / "artifacts" / "runs"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+
+    config_path = tmp_path / "run_eval.toml"
+    config_path.write_text(
+        _config_text(
+            prepared_root=prepared_root,
+            artifacts_root=artifacts_root,
+            run_name="missing-chain-manifest",
+            chain_manifest=None,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("omnichain_eval.cli.resolve_adapter", lambda spec: CountingAdapter())
+
+    try:
+        main(["run-eval", "--config", str(config_path)])
+    except ValueError as exc:
+        assert "chain_manifest" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected run-eval to fail without chain_manifest")

@@ -17,13 +17,11 @@
 - Experiment B 所需 chain manifest 生成
 - 主协议 `main` 和 Experiment D 固定预算协议的 prepared-data 构建
 - 在线 adapter 模式评测
-- 离线预测结果回放评测
 - 各任务输出归一化
 - 指标计算与样本级 pass/fail 判断
 - 通过 OpenAI-compatible API 的 LLM-as-a-judge
 - Experiment A 汇总
 - Experiment B 汇总，包括 OracleTrack 流程接口
-- 多次运行结果的汇总报告
 
 当前还没有内置 10 个 baseline 模型的 adapter。你需要按下面的 adapter 接口把模型接进来。
 
@@ -48,7 +46,7 @@
 运行后产生的目录：
 
 - `prepared_data/`：预构建后的测试数据缓存
-- `artifacts/`：评测结果、预测导出、summary、report 等
+- `artifacts/`：运行期预测结果和 summary
 
 ## 安装方式
 
@@ -123,7 +121,6 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 - `build-chain-manifest`
 - `prepare-data`
 - `run-eval`
-- `report`
 
 现在所有运行参数都通过 TOML 管理。命令本身只接收 `--config`，然后从对应的 TOML section 里读取参数。
 
@@ -136,17 +133,15 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 - 原始数据路径
 - prepared-data 路径
 - protocol id
-- adapter 或离线 prediction 文件
+- adapter 路径
 - judge backend 与生成参数
-- report 输出路径
 
 这样你就可以为不同实验、不同协议、不同模型分别维护不同的 TOML 文件。
 
 仓库内提供了这些示例配置：
 
-- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml)：数据校验、chain manifest、prepare-data、report
+- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml)：数据校验、chain manifest、prepare-data
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)：在线 adapter 评测
-- [configs/examples/run_eval_predictions.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_predictions.toml)：离线预测回放
 - [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml)：Experiment D 独立配置示例
 
 支持的顶层 section：
@@ -156,7 +151,6 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 - `[prepare_data]`
 - `[run_eval]`
 - `[judge]`
-- `[report]`
 
 最小 `run-eval` 示例：
 
@@ -189,8 +183,7 @@ invalid_json_retries = 2
 1. 校验原始数据
 2. 生成 Experiment B 的 chain manifest
 3. 预构建 prepared data
-4. 用 adapter 或离线预测文件进行评测
-5. 汇总报告
+4. 用 adapter 进行评测
 
 下面按步骤说明。
 
@@ -355,7 +348,7 @@ prepared_data/
 - `sample_id`
 - `task_name`
 - `protocol_id`
-- `prompt_text`
+- `question_text`
 - `sampled_frames_original`
 - `sampled_to_original`
 - `frame_files`
@@ -390,16 +383,20 @@ prepared_data/
 - dataset summary
 - dataset fingerprint
 - prepared sample 数量
-- 本次构建中跳过的数据问题列表
+- 本次构建使用的已校验数据元信息
 
 ## 第四步：运行评测
 
-有两种模式：
+当前 `run-eval` 只保留在线 adapter 模式。
 
-- 在线 adapter 模式
-- 离线预测回放模式
+每个 run 目录下会维护 4 个可续测文件：
 
-无论哪种模式，进入评测主流程后，后续的 normalization、metrics、judge、summary 都是统一的。
+- `predictions.jsonl`：独立任务和链式上游任务的原始输出
+- `results.jsonl`：这些样本的完成态评测结果
+- `chain_predictions.jsonl`：链式下游任务的原始输出
+- `chain_results.jsonl`：链式下游任务的完成态评测结果
+
+每次 run 结束后，框架都会基于当前最新结果重写 `summary.json`。
 
 ## 在线 Adapter 模式
 
@@ -415,6 +412,7 @@ prepared_data/
 ```toml
 [run_eval]
 adapter = "mock"
+prompt_root = "prompts/benchmark_v1"
 ```
 
 或者：
@@ -422,7 +420,10 @@ adapter = "mock"
 ```toml
 [run_eval]
 adapter = "my_project.adapters.qwen:QwenVideoAdapter"
+prompt_root = "prompts/benchmark_v1"
 ```
+
+`[run_eval].prompt_root` 现在是必填项，必须指向一个包含 11 个任务 Markdown 模板的 prompt 目录。
 
 ### adapter 接口
 
@@ -434,7 +435,7 @@ adapter = "my_project.adapters.qwen:QwenVideoAdapter"
 from typing import Any
 
 from omnichain_eval.adapters.base import BaseModelAdapter
-from omnichain_eval.schema import PreparedSample
+from omnichain_eval.schema import ModelInput
 
 
 class MyAdapter(BaseModelAdapter):
@@ -450,23 +451,26 @@ class MyAdapter(BaseModelAdapter):
 
     def predict(
         self,
-        sample: PreparedSample,
-        *,
-        oracle_track: bool = False,
-        context: dict[str, Any] | None = None,
+        model_input: ModelInput,
     ) -> Any:
         ...
 ```
 
-### `PreparedSample` 里有什么
+### adapter 会收到什么
 
-adapter 会收到一个 `PreparedSample`，其中常用字段有：
+adapter 现在会收到一个 `ModelInput`。常用字段包括：
+
+- `model_input.task_name`
+- `model_input.frame_files`
+- `model_input.messages`
+- `model_input.oracle_track`
+- `model_input.sample`
+
+其中 `model_input.sample` 里常见字段有：
 
 - `sample_id`
-- `task_name`
 - `protocol_id`
-- `prompt_text`
-- `frame_files`
+- `question_text`
 - `sampled_frames_original`
 - `sampled_to_original`
 - `reference_payload`
@@ -474,18 +478,20 @@ adapter 会收到一个 `PreparedSample`，其中常用字段有：
 - `a_window`
 - `metadata`
 
-其中最常用的是：
-
-- `sample.prompt_text`
-- `sample.frame_files`
-
-你通常把这两项送给模型即可。
+通常你直接把 `model_input.frame_files` 和 `model_input.messages` 送给模型即可。
 
 说明：
 
 - `frame_files` 是绝对路径
 - 每张图已经按采样顺序排好
 - sampled 索引就是 `frame_files` 的顺序索引
+
+如果当前 sample 是链式下游 `Spatial_Imagination`，框架会自动把最终消息构造成：
+
+- `system`
+- `user`：上游问题
+- `assistant`：上游答案
+- `user`：当前下游问题
 
 ### adapter 应返回什么
 
@@ -569,7 +575,7 @@ from pathlib import Path
 from typing import Any
 
 from omnichain_eval.adapters.base import BaseModelAdapter
-from omnichain_eval.schema import PreparedSample
+from omnichain_eval.schema import ModelInput
 
 
 class MyVideoAdapter(BaseModelAdapter):
@@ -582,13 +588,11 @@ class MyVideoAdapter(BaseModelAdapter):
 
     def predict(
         self,
-        sample: PreparedSample,
-        *,
-        oracle_track: bool = False,
-        context: dict[str, Any] | None = None,
+        model_input: ModelInput,
     ) -> Any:
-        image_paths = [Path(path) for path in sample.frame_files]
-        prompt = sample.prompt_text
+        image_paths = [Path(path) for path in model_input.frame_files]
+        messages = model_input.messages_as_dicts()
+        sample = model_input.sample
 
         # 在这里替换成你的真实模型调用逻辑
         if sample.task_name == "Scoreboard_Single":
@@ -615,6 +619,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 prepared_root = "prepared_data"
 protocol = "main"
 artifacts_root = "artifacts/runs"
+prompt_root = "prompts/benchmark_v1"
 adapter = "my_package.my_adapter:MyVideoAdapter"
 
 [judge]
@@ -623,40 +628,8 @@ base_url = "http://your-judge-endpoint/v1"
 api_key_env = "EVAL_JUDGE_API_KEY"
 model = "gpt-4.1-mini"
 invalid_json_retries = 2
+concurrency = 1
 ```
-
-## 离线预测回放模式
-
-如果你已经在别处完成了模型推理，只想把预测结果导入进来评分，就用离线模式。
-
-输入格式是 JSONL。
-
-每一行至少要有：
-
-- `sample_id`
-- `raw_output` 或 `normalized_prediction`
-
-例如：
-
-```json
-{"sample_id": "Sport/Event/1#1", "raw_output": {"text": "The score is 1-0.", "bbox": [10, 20, 200, 80]}}
-{"sample_id": "Sport/Event/1#4", "raw_output": {"text": "The athlete moves from left to right."}}
-{"sample_id": "Sport/Event/1#5", "raw_output": {"segments": [{"start_sampled": 0, "end_sampled": 2, "text": "The athlete jogs into the frame."}]}}
-```
-
-运行方式：
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --config configs/examples/run_eval_predictions.toml
-```
-
-说明：
-
-- 如果存在 `normalized_prediction`，优先使用它
-- 如果 sample 缺失预测，则按“缺失输出”处理
-- 离线模式仍然走统一评分逻辑
 
 ## Judge 配置
 
@@ -677,6 +650,7 @@ max_tokens = 256
 n = 1
 seed = 42
 invalid_json_retries = 2
+concurrency = 1
 ```
 
 然后只在环境变量里提供密钥：
@@ -706,7 +680,8 @@ backend = "static-fail"
 - judge 返回内容如果不是合法 JSON，会自动重试
 - judge 返回内容即使是合法 JSON，只要字段名不对、缺关键字段、关键字段为空、或 0/1 评分字段异常，也会自动重试
 - 重试次数由 `[judge].invalid_json_retries` 控制
-- 如果所有尝试返回的 judge 响应都仍然不合规，则该样本会保留已有 prediction，但本轮不写入 `sample_results.jsonl`，留到下一轮继续
+- 如果所有尝试返回的 judge 响应都仍然不合规，则该样本会保留已有 prediction，但本轮不会写入对应的 `*_results.jsonl`，留到下一轮继续
+- Judge 在后台异步执行；`[judge].concurrency` 控制并发 worker 数
 
 ## 断点续测
 
@@ -714,11 +689,14 @@ backend = "static-fail"
 
 行为如下：
 
-- 每完成一个 sample 的推理，就追加写入 `predictions.jsonl`
-- 每完成一个 sample 的评测，就追加写入 `sample_results.jsonl`
+- 独立任务和链式上游任务的推理结果写入 `predictions.jsonl`
+- 这些样本的完成态评测写入 `results.jsonl`
+- 链式下游任务的推理结果写入 `chain_predictions.jsonl`
+- 链式下游任务的完成态评测写入 `chain_results.jsonl`
 - 如果中途中断，再次使用同一个配置运行时，会自动跳过已完成样本
 - 如果恰好中断在“预测已写入、评分未完成”，则会复用已保存的预测，只补做评分
-- 续测状态不是靠单独的失败清单，而是每轮都重新比对 `prepared_data`、`predictions.jsonl` 和 `sample_results.jsonl`
+- 如果链式上游样本还没有产出回答，对应下游样本会保持 blocked，等下一轮继续
+- 续测状态不是靠单独的失败清单，而是每轮都重新比对这 4 个 artifact 文件
 
 重要说明：
 
@@ -745,32 +723,33 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 其中包括：
 
 - `predictions.jsonl`
-- `sample_results.jsonl`
-- `run_status.json`
-- `task_summaries.json`
+- `results.jsonl`
+- `chain_predictions.jsonl`
+- `chain_results.jsonl`
 - `summary.json`
 
 这些文件的语义是：
 
-- `predictions.jsonl`：当前 run 目录下，已经拿到过原始模型输出的 sample
-- `sample_results.jsonl`：只保存已经完整评测完成的 sample
-- 如果某个 sample 已经完成预测，但 judge 或评分流程没有完成，那么它不会写入 `sample_results.jsonl`，下一轮会继续补测
+- `predictions.jsonl`：独立任务和链式上游任务的原始模型输出
+- `results.jsonl`：这些样本的完成态评测结果
+- `chain_predictions.jsonl`：链式下游任务的原始模型输出
+- `chain_results.jsonl`：链式下游任务的完成态评测结果
+- 如果某个 sample 已经完成预测，但 judge 或评分流程没有完成，那么它不会写入对应的 `*_results.jsonl`，下一轮会继续补测
 
-`run_status.json` 会额外记录：
+`summary.json` 会额外记录：
 
 - 本轮目标 sample 总数
 - 本轮开始前已完成数、本轮新完成数、累计完成数
 - `pending_prediction_sample_ids`
 - `predicted_not_evaluated_sample_ids`
-- 本轮 prediction / evaluation / oracle 失败摘要
-
-`summary.json` 会包含：
-
 - `overall`
 - 各 task 的 summary
 - `experiment_b`
 - 是否支持 commentary
-- `run_status`，内容与 `run_status.json` 一致
+- `pending_chain_prediction_sample_ids`
+- `chain_predicted_not_evaluated_sample_ids`
+- `blocked_chain_sample_ids`
+- 本轮 normal / chain / oracle 失败摘要
 
 说明：
 
@@ -839,31 +818,12 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 - 对 chain pair 做 rerun
 - 调用 adapter 时传入 `oracle_track=True`
-- 同时提供 `context={"chain_pair": ..., "role": "upstream" | "downstream"}`
+- 同时通过 `context` 提供 chain metadata
 - 在上游评分时用 GT tracking 替换 tracking 分量
-
-### 离线模式
-
-如果不用 live adapter，而是想离线做 OracleTrack，则需要提供第二份 oracle prediction 文件：
-
-```toml
-[run_eval]
-predictions = "artifacts/base_predictions.jsonl"
-oracle_predictions = "artifacts/oracle_predictions.jsonl"
-chain_manifest = "artifacts/chain_pairs.jsonl"
-```
-
-注意：
-
-- 框架不会从 base predictions 自动推导 oracle rerun
-- 你必须显式提供 oracle 输出
 
 ## Commentary 支持
 
-如果模型不支持 commentary，有两种方式：
-
-- 在线模式：adapter 返回 `supports_commentary() == False`
-- 离线模式：设置 `[run_eval].commentary_unsupported = true`
+如果模型不支持 commentary，直接让 adapter 返回 `supports_commentary() == False`。
 
 效果：
 
@@ -936,14 +896,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
-### 离线预测评测
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  run-eval \
-  --config configs/examples/run_eval_predictions.toml
-```
-
 ### 预构建全部固定预算缓存
 
 ```bash
@@ -963,9 +915,9 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 1. 先为这个模型和协议新建一个独立 TOML 文件
 2. 运行 `prepare-data`
 3. 编写一个 `BaseModelAdapter` 子类
-4. 让 adapter 只消费：
-   - `sample.frame_files`
-   - `sample.prompt_text`
+4. 在 TOML 里配置 `[run_eval].prompt_root`，并让 adapter 只消费：
+   - `model_input.frame_files`
+   - `model_input.messages`
 5. 让模型返回 benchmark 要求的 canonical output
 6. 先跑 `run-eval --config your_model.toml` 对 `main` 协议评测
 7. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
@@ -979,7 +931,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 - frame cache 不用你管
 - normalization 不用你管
 - 评分不用你管
-- summary/report 不用你管
+- summary 不用你管
 
 你只需要负责：
 

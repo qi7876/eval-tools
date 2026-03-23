@@ -2,6 +2,7 @@
 prepared_root = "../../prepared_data"
 protocol = "main"
 artifacts_root = "../../artifacts/runs"
+prompt_root = "../../prompts/benchmark_v1"
 run_name = "mock-main-demo"
 model_name = "mock"
 adapter = "mock"
@@ -13,3 +14,4 @@ commentary_unsupported = false
 [judge]
 backend = "static-pass"
 invalid_json_retries = 1
+concurrency = 1

@@ -35,7 +35,7 @@ class JudgeClient(ABC):
     def judge(
         self,
         task_name: str,
-        prompt_text: str,
+        question_text: str,
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
@@ -69,7 +69,7 @@ class StaticJudgeClient(JudgeClient):
     def judge(
         self,
         task_name: str,
-        prompt_text: str,
+        question_text: str,
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
@@ -129,13 +129,13 @@ def _task_instruction(task_name: str) -> str:
 
 def _build_user_prompt(
     task_name: str,
-    prompt_text: str,
+    question_text: str,
     reference_payload: dict[str, Any],
     prediction_payload: dict[str, Any],
 ) -> str:
     payload = {
         "task_name": task_name,
-        "question_or_query": prompt_text,
+        "question_or_query": question_text,
         "task_specific_rule": _task_instruction(task_name),
         "reference": reference_payload,
         "prediction": prediction_payload,
@@ -279,7 +279,7 @@ class OpenAIJudgeClient(JudgeClient):
     def judge(
         self,
         task_name: str,
-        prompt_text: str,
+        question_text: str,
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
@@ -295,7 +295,7 @@ class OpenAIJudgeClient(JudgeClient):
                         "role": "user",
                         "content": _build_user_prompt(
                             task_name,
-                            prompt_text,
+                            question_text,
                             reference_payload,
                             prediction_payload,
                         ),
