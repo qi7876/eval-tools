@@ -162,3 +162,46 @@ def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
         )
 
     assert created["client"].chat.completions.calls == 2
+
+
+def test_openai_judge_forwards_extra_body(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs: object):
+            captured.update(kwargs)
+            return _completion(
+                json.dumps(
+                    {
+                        "correctness": 1,
+                        "completeness": 1,
+                        "faithfulness": 1,
+                        "final_pass": 1,
+                        "confidence": "high",
+                        "brief_reason": "Looks good.",
+                    }
+                )
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_: object) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr("omnichain_eval.judge.OpenAI", FakeOpenAI)
+
+    judge_client = OpenAIJudgeClient(
+        base_url="http://judge.example/v1",
+        api_key="dummy",
+        prompt_path=JUDGE_PROMPT_PATH,
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+
+    decision = judge_client.judge(
+        task_name="Continuous_Events_Caption",
+        question_text="Describe the events.",
+        reference_payload={"reference_segments": [{"text": "A score."}]},
+        prediction_payload={"prediction_segments": [{"text": "A score."}]},
+    )
+
+    assert decision.final_pass == 1
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}

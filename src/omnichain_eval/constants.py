@@ -83,17 +83,6 @@ STG_UPSTREAM_TASKS = {
 }
 
 STRUCTURER_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
-STRUCTURER_SYSTEM_PROMPT = """You are a structured extraction assistant for a video understanding benchmark.
-
-Your job is to convert a model's raw answer into the benchmark's canonical JSON format.
-
-Important:
-- Use only information present in the raw model output.
-- Do not infer missing coordinates, intervals, or tracking rows.
-- If a field is missing, leave it empty using the task's canonical empty value.
-- Return JSON only.
-"""
-
 JUDGE_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
 JUDGE_JSON_KEYS = {
     "correctness",

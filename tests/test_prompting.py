@@ -21,7 +21,7 @@ def test_load_prompt_pack_requires_all_task_templates(tmp_path):
     prompt_root = tmp_path / "prompts"
     prompt_root.mkdir()
     (prompt_root / "Scoreboard_Single.md").write_text(
-        "# system\ntext\n\n# user\nQuestion: {{question}}\n",
+        "Question: {{question}}\n",
         encoding="utf-8",
     )
 
@@ -32,11 +32,11 @@ def test_load_prompt_pack_requires_all_task_templates(tmp_path):
 def test_load_prompt_pack_rejects_unknown_variables(tmp_path):
     for task_name in sorted(ALL_TASKS):
         (tmp_path / f"{task_name}.md").write_text(
-            "# system\ntext\n\n# user\nQuestion: {{question}}\n",
+            "Question: {{question}}\n",
             encoding="utf-8",
         )
     (tmp_path / "AI_Coach.md").write_text(
-        "# system\ntext\n\n# user\nBad: {{unknown_variable}}\n",
+        "Bad: {{unknown_variable}}\n",
         encoding="utf-8",
     )
 
@@ -75,6 +75,6 @@ def test_rendered_spatial_imagination_model_input_includes_history(monkeypatch, 
         conversation_history=conversation_history,
     )
 
-    assert [message.role for message in model_input.messages] == ["system", "user", "assistant", "user"]
-    assert model_input.messages[1].content == upstream_sample.question_text
-    assert model_input.messages[2].content == '{"text": "mock upstream answer"}'
+    assert [message.role for message in model_input.messages] == ["user", "assistant", "user"]
+    assert model_input.messages[0].content == upstream_sample.question_text
+    assert model_input.messages[1].content == '{"text": "mock upstream answer"}'

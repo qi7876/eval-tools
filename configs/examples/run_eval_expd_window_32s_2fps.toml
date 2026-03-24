@@ -1,5 +1,5 @@
 [run_eval]
-prepared_root = "../../prepared_data"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocol = "expd_window_32s_2fps"
 artifacts_root = "../../artifacts/runs"
 prompt_root = "../../prompts/benchmark_v1"
@@ -7,34 +7,27 @@ run_name = "baseline-expd-window-32s-2fps"
 model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 enable_oracle_track = false
-enable_bertscore = false
 
 [judge]
 backend = "openai"
 prompt_path = "../../prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
-temperature = 0.0
-top_p = 1.0
-top_k = 1
-max_tokens = 256
-n = 1
-seed = 42
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
+
+[judge.extra_body.thinking]
+type = "disabled"
 
 [structurer]
 backend = "openai"
 prompt_root = "../../prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
-temperature = 0.0
-top_p = 1.0
-top_k = 1
-max_tokens = 512
-n = 1
-seed = 42
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer.extra_body.thinking]
+type = "disabled"

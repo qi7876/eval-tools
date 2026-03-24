@@ -10,7 +10,7 @@ This repository provides the evaluation framework for OmniChainBench. It has two
 1. Convert the raw benchmark dataset into reusable prepared test data.
 2. Evaluate model outputs consistently across all benchmark tasks and experiments.
 
-The framework is designed around a prepared-data workflow. You build the sampled model inputs once, cache them under `prepared_data/`, and then reuse them across all baseline models. This avoids repeatedly decoding videos and rebuilding sampled frames for each run.
+The framework is designed around a prepared-data workflow. You build the sampled model inputs once, cache them under a configured `prepared_root` such as `/data/public_data/mllmbenchmark_prepared`, and then reuse them across all baseline models. This avoids repeatedly decoding videos and rebuilding sampled frames for each run.
 
 ## What The Framework Covers
 
@@ -49,11 +49,17 @@ Key files:
 - `prompts/benchmark_v1/`: task-specific inference prompt pack
 - `prompts/structurer_v1/`: task-specific structurer prompt pack
 - `prompts/judge_v1.md`: judge prompt template
+
+Prompt-template convention:
+
+- each Markdown file is the final prompt template body
+- there are no `# system` / `# user` sections anymore
+- benchmark, structurer, and judge all send user-only prompts at runtime
 - `configs/examples/`: example TOML configs for common workflows
 
 Generated directories:
 
-- `prepared_data/`: prepared sample bundles
+- configured `prepared_root` such as `/data/public_data/mllmbenchmark_prepared/`: prepared sample bundles
 - `artifacts/`: run-time predictions and summaries
 
 ## Installation
@@ -72,12 +78,6 @@ For development and tests:
 UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev
 ```
 
-If you want supplementary BERTScore support:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra bertscore
-```
-
 Notes:
 
 - `UV_CACHE_DIR=/tmp/uv-cache` is recommended in this environment because the default cache path may be unwritable.
@@ -85,10 +85,12 @@ Notes:
 
 ## Dataset Assumptions
 
-The framework expects a `data/` root with benchmark annotations and videos. At minimum, it assumes:
+The framework expects a raw dataset root configured through TOML. In the server examples used in this repository, that root is `/data/public_data/mllmbenchmark`.
 
-- main annotation files like `data/<sport>/<event>/<video_id>.json`
-- videos alongside them as `data/<sport>/<event>/<video_id>.mp4`
+At minimum, it assumes:
+
+- main annotation files like `<data_root>/<sport>/<event>/<video_id>.json`
+- videos alongside them as `<data_root>/<sport>/<event>/<video_id>.mp4`
 - tracking files in `mot/*.txt`
 
 The loader resolves tracking paths from the raw annotation fields, including paths written like `./data/...` or `./dataset/...`.
@@ -157,7 +159,7 @@ Minimal example:
 
 ```toml
 [run_eval]
-prepared_root = "prepared_data"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocol = "main"
 artifacts_root = "artifacts/runs"
 prompt_root = "prompts/benchmark_v1"
@@ -167,26 +169,27 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 
 [judge]
 backend = "openai"
 prompt_path = "prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 ```
 
 Path rules:
 
 - relative paths are resolved relative to the TOML file location
+- absolute paths are supported directly
 - different experiments should use different TOML files
 - keep `[run_eval]`, `[structurer]`, and `[judge]` together in the same run-eval TOML
-- secrets can stay out of TOML by setting `[judge].api_key_env`
+- secrets can stay out of TOML by setting `api_key_env`
 
 ## Typical End-To-End Workflow
 
@@ -259,8 +262,8 @@ If you want a dedicated config just for one protocol, create a separate TOML fil
 
 ```toml
 [prepare_data]
-data_root = "data"
-prepared_root = "prepared_data"
+data_root = "/data/public_data/mllmbenchmark"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocols = ["main"]
 ```
 
@@ -271,7 +274,7 @@ What it does:
 - decodes the required frames
 - writes each sample as a prepared bundle
 
-The cache is sample-centric. The runtime evaluation path reads from `prepared_data/` instead of decoding raw videos again.
+The cache is sample-centric. The runtime evaluation path reads from the configured `prepared_root` instead of decoding raw videos again.
 
 ### 4. Evaluate a model
 
@@ -311,7 +314,7 @@ Notes:
 After running `prepare-data` with a config whose `[prepare_data].protocols` includes `main`, the layout looks like:
 
 ```text
-prepared_data/
+<prepared_root>/
   main/
     build_manifest.json
     index.jsonl
@@ -462,10 +465,9 @@ In practice, adapters usually read frame paths from `model_input.sample.frame_fi
 
 For chain-downstream `Spatial_Imagination`, the framework automatically builds the final message list as:
 
-- `system`
 - `user`: upstream question
 - `assistant`: upstream answer
-- `user`: current downstream question
+- `user`: current downstream prompt rendered from the benchmark template
 
 ### What The Adapter Should Return
 
@@ -581,7 +583,7 @@ The TOML should contain at least:
 
 ```toml
 [run_eval]
-prepared_root = "prepared_data"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocol = "main"
 artifacts_root = "artifacts/runs"
 prompt_root = "prompts/benchmark_v1"
@@ -590,18 +592,18 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 [judge]
 backend = "openai"
 prompt_path = "prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
 
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
 ```
@@ -610,6 +612,7 @@ concurrency = 1
 
 Structurer settings live in the `[structurer]` section of the TOML file used by `run-eval`.
 `[structurer].prompt_root` must point to a directory containing one Markdown template per task.
+Each Markdown file is the final user prompt body sent to the structurer model.
 
 Typical OpenAI-compatible configuration:
 
@@ -617,18 +620,18 @@ Typical OpenAI-compatible configuration:
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
-temperature = 0.0
-top_p = 1.0
-top_k = 1
-max_tokens = 512
-n = 1
-seed = 42
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer.extra_body.thinking]
+type = "disabled"
 ```
+
+`[structurer].extra_body` is passed through directly to the OpenAI-compatible request body. This is the place to put provider-specific options such as Kimi's thinking control.
+The framework does not expose a configurable `[structurer].temperature`; for Kimi non-thinking, temperature is fixed provider-side and should not be sent.
 
 For local smoke tests you can skip the external structurer API and use:
 
@@ -639,6 +642,14 @@ prompt_root = "prompts/structurer_v1"
 invalid_json_retries = 1
 concurrency = 1
 ```
+
+Current structurer behavior:
+
+- prompts are task-specific rather than one shared generic prompt
+- the structurer may do light normalization of explicit values from the raw model output
+- it may use the question only to understand which canonical fields the current task expects
+- it should prefer the final answer if the raw output contains reasoning plus a final answer
+- it must not invent missing boxes, intervals, tracking rows, or answer text that do not appear in the raw model output
 
 Retry behavior:
 
@@ -651,7 +662,7 @@ Retry behavior:
 ## Judge Configuration
 
 Judge settings live in the `[judge]` section of the TOML file used by `run-eval`.
-`[judge].prompt_path` points to the Markdown file that defines the judge system/user prompt.
+`[judge].prompt_path` points to the Markdown file that defines the final user-only judge prompt.
 
 Typical OpenAI-compatible configuration:
 
@@ -659,26 +670,41 @@ Typical OpenAI-compatible configuration:
 [judge]
 backend = "openai"
 prompt_path = "prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
-temperature = 0.0
-top_p = 1.0
-top_k = 1
-max_tokens = 256
-n = 1
-seed = 42
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
+
+[judge.extra_body.thinking]
+type = "disabled"
 ```
+
+`[judge].extra_body` is also forwarded unchanged into the request body. For Kimi `kimi-k2.5 non-thinking`, configure:
+
+```toml
+[judge]
+backend = "openai"
+prompt_path = "prompts/judge_v1.md"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
+invalid_json_retries = 2
+concurrency = 1
+
+[judge.extra_body.thinking]
+type = "disabled"
+```
+
+The framework does not expose a configurable `[judge].temperature`; for Kimi non-thinking, temperature is fixed provider-side and should not be sent.
 
 Then export only the secret:
 
 ```bash
-export EVAL_JUDGE_API_KEY="your-api-key"
+export KIMI_API_KEY="your-api-key"
 ```
 
-You can use `[judge].api_key` directly in TOML, but `api_key_env` is usually cleaner.
+You can use `[judge].api_key` directly in TOML, but `api_key_env` is usually cleaner. When both judge and structurer use Kimi, they can share the same `KIMI_API_KEY`.
 
 For local smoke tests you can avoid external judge calls by changing the backend:
 
@@ -848,18 +874,7 @@ What the framework does:
 
 ## BERTScore
 
-Enable it only if you installed the `bertscore` extra:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config path/to/run_eval_with_bertscore.toml
-```
-
-with:
-
-```toml
-[run_eval]
-enable_bertscore = true
-```
+BERTScore is always computed during evaluation when a task provides textual comparison inputs.
 
 Notes:
 

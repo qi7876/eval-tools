@@ -1078,15 +1078,13 @@ name = "omnichain-eval"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "bert-score" },
     { name = "openai" },
     { name = "opencv-python-headless" },
     { name = "pillow" },
 ]
 
 [package.optional-dependencies]
-bertscore = [
-    { name = "bert-score" },
-]
 dev = [
     { name = "pytest" },
 ]
@@ -1098,13 +1096,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "bert-score", marker = "extra == 'bertscore'", specifier = ">=0.3.13" },
+    { name = "bert-score", specifier = ">=0.3.13" },
     { name = "openai", specifier = ">=1.40.0,<2.0.0" },
     { name = "opencv-python-headless", specifier = ">=4.10.0,<5.0.0" },
     { name = "pillow", specifier = ">=10.0.0,<12.0.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0.0,<9.0.0" },
 ]
-provides-extras = ["bertscore", "dev"]
+provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "ruff", specifier = ">=0.15.7" }]

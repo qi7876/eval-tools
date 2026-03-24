@@ -34,6 +34,7 @@ def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
 
 
 def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
     records, issues = scan_dataset(FIXTURE_ROOT)
     assert not issues
     assert len(records) == 4

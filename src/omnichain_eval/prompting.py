@@ -104,13 +104,11 @@ def render_prompt(
         "output_contract": _output_contract(sample.task_name),
         "oracle_track_enabled": str(oracle_track).lower(),
     }
-    system_prompt = render_template_text(template.system_template, variables, template.path)
-    user_prompt = render_template_text(template.user_template, variables, template.path)
+    prompt_text = render_template_text(template.prompt_template, variables, template.path)
     return RenderedPrompt(
         task_name=sample.task_name,
         template_path=str(template.path),
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        prompt_text=prompt_text,
         variables=variables,
     )
 
@@ -123,11 +121,9 @@ def build_model_input(
     conversation_history: list[PromptMessage] | None = None,
 ) -> ModelInput:
     messages: list[PromptMessage] = []
-    if rendered_prompt.system_prompt:
-        messages.append(PromptMessage(role="system", content=rendered_prompt.system_prompt))
     if conversation_history:
         messages.extend(conversation_history)
-    messages.append(PromptMessage(role="user", content=rendered_prompt.user_prompt))
+    messages.append(PromptMessage(role="user", content=rendered_prompt.prompt_text))
     return ModelInput(
         sample=sample,
         messages=messages,

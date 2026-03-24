@@ -92,12 +92,7 @@ def _judge_client_from_config(judge_config: JudgeConfig):
         api_key=api_key,
         prompt_path=judge_config.prompt_path,
         model=judge_config.model,
-        temperature=judge_config.temperature,
-        top_p=judge_config.top_p,
-        top_k=judge_config.top_k,
-        max_tokens=judge_config.max_tokens,
-        n=judge_config.n,
-        seed=judge_config.seed,
+        extra_body=judge_config.extra_body,
         invalid_json_retries=judge_config.invalid_json_retries,
     )
 
@@ -118,12 +113,7 @@ def _structurer_service_from_config(structurer_config: StructurerConfig) -> Stru
             base_url=base_url,
             api_key=api_key,
             model=structurer_config.model,
-            temperature=structurer_config.temperature,
-            top_p=structurer_config.top_p,
-            top_k=structurer_config.top_k,
-            max_tokens=structurer_config.max_tokens,
-            n=structurer_config.n,
-            seed=structurer_config.seed,
+            extra_body=structurer_config.extra_body,
         )
     return StructurerService(
         backend=backend,
@@ -823,7 +813,6 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         prepared_samples,
         ordered_records,
         model_name=model_name,
-        enable_bertscore=config.enable_bertscore,
     )
 
     oracle_summary = None

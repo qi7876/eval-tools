@@ -1,25 +1,35 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from omnichain_eval.schema import PreparedSample
 from omnichain_eval.structurer import (
+    OpenAIStructurerBackend,
     StructurerBackend,
     StructurerResponseFormatExhaustedError,
     StructurerService,
+    load_structurer_prompt_pack,
+    render_structurer_prompt,
 )
 from omnichain_eval.template_pack import TaskTemplate
 
+PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
 
-def _sample() -> PreparedSample:
+
+def _sample(
+    *,
+    task_name: str = "Scoreboard_Multiple",
+    question_text: str = "Who is leading?",
+) -> PreparedSample:
     return PreparedSample(
         sample_id="video/sample#1",
         annotation_id="1",
         video_key="video/sample",
-        task_name="Scoreboard_Multiple",
+        task_name=task_name,
         task_level="independent",
         protocol_id="main",
-        question_text="Who is leading?",
+        question_text=question_text,
         sampled_frames_original=[0, 10, 20],
         sampled_to_original={0: 0, 1: 10, 2: 20},
         frame_files=["frames/0000.jpg", "frames/0001.jpg", "frames/0002.jpg"],
@@ -34,8 +44,7 @@ def _prompt_pack() -> dict[str, TaskTemplate]:
         "Scoreboard_Multiple": TaskTemplate(
             task_name="Scoreboard_Multiple",
             path=Path("Scoreboard_Multiple.md"),
-            system_template="",
-            user_template="{{question}}\n{{raw_output}}\n{{output_schema}}",
+            prompt_template="{{question}}\n{{raw_output}}\n{{output_schema}}",
         )
     }
 
@@ -106,3 +115,90 @@ def test_structurer_raises_after_exhausting_format_retries():
         service.structure(_sample(), '{"text": "Team A is leading."}')
 
     assert backend.calls == 2
+
+
+def test_rendered_structurer_prompt_for_scoreboard_single_includes_bbox_rules():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Scoreboard_Single",
+            question_text="Read the scoreboard and localize it.",
+        ),
+        'Reasoning...\nFinal answer: {"text": "1-0", "bbox": [10, 20, 30, 40]}',
+    )
+
+    assert "extract the final answer" in rendered.prompt_text
+    assert "bbox = [xtl, ytl, xbr, ybr]" in rendered.prompt_text
+    assert "Do not infer a bbox that is not explicitly given." in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_actions_includes_tracking_rules():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Continuous_Actions_Caption",
+            question_text="Describe the athlete actions over time.",
+        ),
+        "frames 2-4: starts running; frame 3 bbox [1,2,3,4]",
+    )
+
+    assert "normalize explicit interval expressions" in rendered.prompt_text
+    assert "normalize explicit tracking rows" in rendered.prompt_text
+    assert "`bbox_mot` must be formatted as `[left, top, width, height]`." in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_text_task_uses_question_only_for_alignment():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Temporal_Causal",
+            question_text="Why did the play fail?",
+        ),
+        "Analysis...\nFinal answer: the defender blocked the lane.",
+    )
+
+    assert "Use the question only to understand what field the task expects." in rendered.prompt_text
+    assert "Do not copy answer content from the question into the prediction." in rendered.prompt_text
+    assert "prefer the last one presented as the final answer." in rendered.prompt_text
+
+
+def test_openai_structurer_forwards_extra_body(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class FakeCompletions:
+        def create(self, **kwargs: object):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content='{"text": "Team A is leading."}')
+                    )
+                ]
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_: object) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr("omnichain_eval.structurer.OpenAI", FakeOpenAI)
+
+    backend = OpenAIStructurerBackend(
+        base_url="http://structurer.example/v1",
+        api_key="dummy",
+        extra_body={"thinking": {"type": "disabled"}},
+    )
+    responses = backend.complete(
+        sample=_sample(),
+        raw_output='{"text": "Team A is leading."}',
+        rendered_prompt=render_structurer_prompt(
+            _prompt_pack(),
+            _sample(),
+            '{"text": "Team A is leading."}',
+        ),
+    )
+
+    assert responses == ['{"text": "Team A is leading."}']
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}

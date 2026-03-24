@@ -67,7 +67,7 @@ def compute_bertscore(records: list[EvaluationRecord]) -> None:
         from bert_score import score
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
-            "bert-score is not installed. Install the 'bertscore' extra to enable it."
+            "bert-score dependency is not available in the current environment."
         ) from exc
     _, _, f1_scores = score(
         cands=[record.bertscore_candidate for record in eligible],
@@ -87,13 +87,11 @@ def summarize_evaluation_records(
     records: list[EvaluationRecord],
     *,
     model_name: str,
-    enable_bertscore: bool = False,
 ) -> dict[str, Any]:
     tasks_present = defaultdict(list)
     for prepared_sample in prepared_samples:
         tasks_present[prepared_sample.task_name].append(prepared_sample)
-    if enable_bertscore:
-        compute_bertscore(records)
+    compute_bertscore(records)
 
     records_by_task: dict[str, list[EvaluationRecord]] = defaultdict(list)
     for record in records:
@@ -138,7 +136,6 @@ def evaluate_prepared_predictions(
     *,
     model_name: str,
     judge_client: JudgeClient | None,
-    enable_bertscore: bool = False,
 ) -> dict[str, Any]:
     records: list[EvaluationRecord] = []
     for prepared_sample in prepared_samples:
@@ -156,7 +153,6 @@ def evaluate_prepared_predictions(
         prepared_samples,
         records,
         model_name=model_name,
-        enable_bertscore=enable_bertscore,
     )
 
 

@@ -193,10 +193,7 @@ def render_judge_prompt(
         reference_payload,
         prediction_payload,
     )
-    return (
-        render_template_text(template.system_template, variables, template.path),
-        render_template_text(template.user_template, variables, template.path),
-    )
+    return render_template_text(template.prompt_template, variables, template.path)
 
 
 class OpenAIJudgeClient(JudgeClient):
@@ -209,23 +206,13 @@ class OpenAIJudgeClient(JudgeClient):
         api_key: str,
         prompt_path: Path,
         model: str = JUDGE_MODEL_DEFAULT,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: int = 1,
-        max_tokens: int = 256,
-        n: int = 1,
-        seed: int = 42,
+        extra_body: dict[str, Any] | None = None,
         invalid_json_retries: int = 0,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.prompt_template = load_judge_prompt_template(prompt_path)
         self.model = model
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.max_tokens = max_tokens
-        self.n = n
-        self.seed = seed
+        self.extra_body = dict(extra_body or {})
         self.invalid_json_retries = invalid_json_retries
 
     @classmethod
@@ -233,12 +220,7 @@ class OpenAIJudgeClient(JudgeClient):
         cls,
         *,
         prompt_path: Path,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: int = 1,
-        max_tokens: int = 256,
-        n: int = 1,
-        seed: int = 42,
+        extra_body: dict[str, Any] | None = None,
         invalid_json_retries: int = 0,
     ) -> "OpenAIJudgeClient":
         base_url = os.environ.get("EVAL_JUDGE_BASE_URL")
@@ -253,12 +235,7 @@ class OpenAIJudgeClient(JudgeClient):
             api_key=api_key,
             prompt_path=prompt_path,
             model=model,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            max_tokens=max_tokens,
-            n=n,
-            seed=seed,
+            extra_body=extra_body,
             invalid_json_retries=invalid_json_retries,
         )
 
@@ -335,7 +312,7 @@ class OpenAIJudgeClient(JudgeClient):
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
-        system_prompt, user_prompt = render_judge_prompt(
+        prompt_text = render_judge_prompt(
             self.prompt_template,
             task_name=task_name,
             question_text=question_text,
@@ -348,16 +325,8 @@ class OpenAIJudgeClient(JudgeClient):
         for attempt_index in range(max_attempts):
             completion = self.client.chat.completions.create(
                 model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=self.temperature,
-                top_p=self.top_p,
-                max_tokens=self.max_tokens,
-                n=self.n,
-                seed=self.seed,
-                extra_body={"top_k": self.top_k},
+                messages=[{"role": "user", "content": prompt_text}],
+                extra_body=self.extra_body or None,
             )
             for raw_response in self._response_texts(completion):
                 last_raw_response = raw_response

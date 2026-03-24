@@ -11,7 +11,6 @@ from openai import OpenAI
 
 from .constants import (
     STRUCTURER_MODEL_DEFAULT,
-    STRUCTURER_SYSTEM_PROMPT,
     TASK_AI_COACH,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
@@ -63,8 +62,7 @@ class StructurerResponseFormatExhaustedError(RuntimeError):
 class RenderedStructurerPrompt:
     task_name: str
     template_path: str
-    system_prompt: str
-    user_prompt: str
+    prompt_text: str
     variables: dict[str, Any]
 
 
@@ -104,21 +102,11 @@ class OpenAIStructurerBackend(StructurerBackend):
         base_url: str,
         api_key: str,
         model: str = STRUCTURER_MODEL_DEFAULT,
-        temperature: float = 0.0,
-        top_p: float = 1.0,
-        top_k: int = 1,
-        max_tokens: int = 512,
-        n: int = 1,
-        seed: int = 42,
+        extra_body: dict[str, Any] | None = None,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
-        self.temperature = temperature
-        self.top_p = top_p
-        self.top_k = top_k
-        self.max_tokens = max_tokens
-        self.n = n
-        self.seed = seed
+        self.extra_body = dict(extra_body or {})
 
     def _response_texts(self, completion: Any) -> list[str]:
         responses: list[str] = []
@@ -145,15 +133,9 @@ class OpenAIStructurerBackend(StructurerBackend):
         completion = self.client.chat.completions.create(
             model=self.model,
             messages=[
-                {"role": "system", "content": rendered_prompt.system_prompt},
-                {"role": "user", "content": rendered_prompt.user_prompt},
+                {"role": "user", "content": rendered_prompt.prompt_text},
             ],
-            temperature=self.temperature,
-            top_p=self.top_p,
-            max_tokens=self.max_tokens,
-            n=self.n,
-            seed=self.seed,
-            extra_body={"top_k": self.top_k},
+            extra_body=self.extra_body or None,
         )
         return self._response_texts(completion)
 
@@ -212,15 +194,11 @@ def render_structurer_prompt(
         "sampled_index_range": _sampled_index_range(sample),
         "output_schema": _output_schema(sample.task_name),
     }
-    system_prompt = render_template_text(template.system_template, variables, template.path)
-    user_prompt = render_template_text(template.user_template, variables, template.path)
-    if not system_prompt:
-        system_prompt = STRUCTURER_SYSTEM_PROMPT
+    prompt_text = render_template_text(template.prompt_template, variables, template.path)
     return RenderedStructurerPrompt(
         task_name=sample.task_name,
         template_path=str(template.path),
-        system_prompt=system_prompt,
-        user_prompt=user_prompt,
+        prompt_text=prompt_text,
         variables=variables,
     )
 

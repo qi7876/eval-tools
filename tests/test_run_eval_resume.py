@@ -157,6 +157,7 @@ def test_evaluate_sample_skips_question_when_judge_format_errors_are_exhausted(
 
 
 def test_run_eval_resumes_from_existing_results(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
     monkeypatch.setattr(
         "omnichain_eval.prepare.decode_selected_frames",
         fake_decode_selected_frames,
@@ -232,6 +233,7 @@ def test_run_eval_resumes_from_existing_results(monkeypatch, tmp_path):
 
 
 def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
     monkeypatch.setattr(
         "omnichain_eval.prepare.decode_selected_frames",
         fake_decode_selected_frames,
@@ -321,6 +323,7 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
 
 
 def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
     monkeypatch.setattr(
         "omnichain_eval.prepare.decode_selected_frames",
         fake_decode_selected_frames,
@@ -378,9 +381,9 @@ def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, 
         if sample.sample_id == "TestSport/TestEvent/1#2"
     )
     expected_upstream_output = MockAdapter().predict(build_test_model_input(upstream_sample))
-    assert [message["role"] for message in messages] == ["system", "user", "assistant", "user"]
-    assert messages[1]["content"] == "Describe the athlete actions."
-    assert messages[2]["content"] == expected_upstream_output
+    assert [message["role"] for message in messages] == ["user", "assistant", "user"]
+    assert messages[0]["content"] == "Describe the athlete actions."
+    assert messages[1]["content"] == expected_upstream_output
 
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["run_status"]["pending_chain_prediction_sample_ids"] == []

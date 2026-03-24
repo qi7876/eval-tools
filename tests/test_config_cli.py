@@ -29,14 +29,11 @@ prompt_path = "../prompts/judge_v1.md"
 base_url = "http://judge.example/v1"
 api_key_env = "CUSTOM_JUDGE_KEY"
 model = "judge-model"
-temperature = 0.2
-top_p = 0.95
-top_k = 4
-max_tokens = 512
-n = 2
-seed = 7
 invalid_json_retries = 3
 concurrency = 2
+
+[judge.extra_body.thinking]
+type = "disabled"
 
 [structurer]
 backend = "openai"
@@ -44,14 +41,11 @@ prompt_root = "../prompts/structurer_v1"
 base_url = "http://structurer.example/v1"
 api_key_env = "CUSTOM_STRUCTURER_KEY"
 model = "structurer-model"
-temperature = 0.1
-top_p = 0.9
-top_k = 3
-max_tokens = 768
-n = 1
-seed = 17
 invalid_json_retries = 4
 concurrency = 5
+
+[structurer.extra_body.thinking]
+type = "disabled"
 """.strip(),
         encoding="utf-8",
     )
@@ -72,12 +66,7 @@ concurrency = 5
     assert config.judge.base_url == "http://judge.example/v1"
     assert config.judge.api_key_env == "CUSTOM_JUDGE_KEY"
     assert config.judge.model == "judge-model"
-    assert config.judge.temperature == 0.2
-    assert config.judge.top_p == 0.95
-    assert config.judge.top_k == 4
-    assert config.judge.max_tokens == 512
-    assert config.judge.n == 2
-    assert config.judge.seed == 7
+    assert config.judge.extra_body == {"thinking": {"type": "disabled"}}
     assert config.judge.invalid_json_retries == 3
     assert config.judge.concurrency == 2
     assert config.structurer.backend == "openai"
@@ -85,12 +74,7 @@ concurrency = 5
     assert config.structurer.base_url == "http://structurer.example/v1"
     assert config.structurer.api_key_env == "CUSTOM_STRUCTURER_KEY"
     assert config.structurer.model == "structurer-model"
-    assert config.structurer.temperature == 0.1
-    assert config.structurer.top_p == 0.9
-    assert config.structurer.top_k == 3
-    assert config.structurer.max_tokens == 768
-    assert config.structurer.n == 1
-    assert config.structurer.seed == 17
+    assert config.structurer.extra_body == {"thinking": {"type": "disabled"}}
     assert config.structurer.invalid_json_retries == 4
     assert config.structurer.concurrency == 5
 

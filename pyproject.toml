@@ -13,15 +13,13 @@ authors = [
   { name = "OpenAI Codex" }
 ]
 dependencies = [
+  "bert-score>=0.3.13",
   "opencv-python-headless>=4.10.0,<5.0.0",
   "openai>=1.40.0,<2.0.0",
   "Pillow>=10.0.0,<12.0.0",
 ]
 
 [project.optional-dependencies]
-bertscore = [
-  "bert-score>=0.3.13",
-]
 dev = [
   "pytest>=8.0.0,<9.0.0",
 ]

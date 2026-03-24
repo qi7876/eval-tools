@@ -1,4 +1,3 @@
-# system
 You are an evaluator for a video understanding benchmark.
 
 Your job is to decide whether the prediction should be accepted for this benchmark sample.
@@ -28,8 +27,6 @@ Important:
 - Return exactly one JSON object and nothing else.
 - Do not use Markdown, code fences, or extra commentary.
 - Return JSON only.
-
-# user
 Task name:
 {{task_name}}
 

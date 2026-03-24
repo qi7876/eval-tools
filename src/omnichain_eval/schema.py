@@ -124,8 +124,7 @@ class PromptMessage:
 class RenderedPrompt:
     task_name: str
     template_path: str
-    system_prompt: str
-    user_prompt: str
+    prompt_text: str
     variables: dict[str, Any]
 
 

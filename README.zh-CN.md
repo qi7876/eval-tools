@@ -7,7 +7,7 @@
 
 这个框架的设计重点是“先预构建、后复用”。
 
-也就是说，你先对原始视频做一次采样和解码，生成 `prepared_data/` 缓存；后续评测 10 个 baseline 模型时，直接复用这些缓存，不再重复从视频解码和采样。这样可以显著降低重复开销，也能保证不同模型看到的是完全一致的输入。
+也就是说，你先对原始视频做一次采样和解码，生成配置里的 `prepared_root` 缓存，例如 `/data/public_data/mllmbenchmark_prepared`；后续评测 10 个 baseline 模型时，直接复用这些缓存，不再重复从视频解码和采样。这样可以显著降低重复开销，也能保证不同模型看到的是完全一致的输入。
 
 ## 当前能力
 
@@ -47,11 +47,17 @@
 - `prompts/benchmark_v1/`：任务级 inference prompt 模板
 - `prompts/structurer_v1/`：任务级 structurer prompt 模板
 - `prompts/judge_v1.md`：judge prompt 模板
+
+当前 prompt 模板约定：
+
+- 每个 Markdown 文件本身就是最终 prompt 正文
+- 不再使用 `# system` / `# user` 这种分段格式
+- benchmark、structurer、judge 在运行时都只发送 user prompt
 - `configs/examples/`：常见流程的 TOML 示例配置
 
 运行后产生的目录：
 
-- `prepared_data/`：预构建后的测试数据缓存
+- 配置中的 `prepared_root`，例如 `/data/public_data/mllmbenchmark_prepared/`：预构建后的测试数据缓存
 - `artifacts/`：运行期预测结果和 summary
 
 ## 安装方式
@@ -70,12 +76,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync
 UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev
 ```
 
-如果需要开启 BERTScore：
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra bertscore
-```
-
 说明：
 
 - 在当前环境下建议显式设置 `UV_CACHE_DIR=/tmp/uv-cache`，避免默认缓存目录不可写。
@@ -83,10 +83,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra bertscore
 
 ## 数据集假设
 
-框架默认原始数据根目录为 `data/`，目录结构至少满足：
+框架要求你在 TOML 中显式配置原始数据根目录。在当前服务器示例里，这个目录是 `/data/public_data/mllmbenchmark`。
 
-- 主标注：`data/<sport>/<event>/<video_id>.json`
-- 视频：`data/<sport>/<event>/<video_id>.mp4`
+目录结构至少满足：
+
+- 主标注：`<data_root>/<sport>/<event>/<video_id>.json`
+- 视频：`<data_root>/<sport>/<event>/<video_id>.mp4`
 - Tracking GT：`mot/*.txt`
 
 每个 annotation 会被转换成稳定的 `sample_id`：
@@ -163,7 +165,7 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 
 ```toml
 [run_eval]
-prepared_root = "prepared_data"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocol = "main"
 artifacts_root = "artifacts/runs"
 prompt_root = "prompts/benchmark_v1"
@@ -173,26 +175,27 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 
 [judge]
 backend = "openai"
 prompt_path = "prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 ```
 
 路径规则：
 
 - 相对路径都以当前 TOML 文件所在目录为基准解析
+- 绝对路径可以直接写
 - 不同实验建议拆成不同 TOML 文件
 - `run-eval` 相关的 `[run_eval]`、`[structurer]`、`[judge]` 建议放在同一个 TOML 中统一管理
-- 密钥更建议通过 `[judge].api_key_env` 指向环境变量
+- 密钥更建议通过 `api_key_env` 指向环境变量
 
 ## 标准工作流
 
@@ -281,8 +284,8 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 ```toml
 [prepare_data]
-data_root = "data"
-prepared_root = "prepared_data"
+data_root = "/data/public_data/mllmbenchmark"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocols = ["main"]
 ```
 
@@ -328,7 +331,7 @@ prepared-data 方案解决了这些问题。
 执行 `prepare-data`，并且对应配置的 `[prepare_data].protocols` 包含 `main` 后，目录类似：
 
 ```text
-prepared_data/
+<prepared_root>/
   main/
     build_manifest.json
     index.jsonl
@@ -511,10 +514,9 @@ adapter 现在会收到一个 `ModelInput`。常用字段包括：
 
 如果当前 sample 是链式下游 `Spatial_Imagination`，框架会自动把最终消息构造成：
 
-- `system`
 - `user`：上游问题
 - `assistant`：上游答案
-- `user`：当前下游问题
+- `user`：当前任务模板渲染出的下游 prompt
 
 ### adapter 应返回什么
 
@@ -632,7 +634,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 ```toml
 [run_eval]
-prepared_root = "prepared_data"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocol = "main"
 artifacts_root = "artifacts/runs"
 prompt_root = "prompts/benchmark_v1"
@@ -641,18 +643,18 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 [judge]
 backend = "openai"
 prompt_path = "prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
 
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
 ```
@@ -661,6 +663,7 @@ concurrency = 1
 
 Structurer 的配置写在 `run-eval` 所使用 TOML 的 `[structurer]` section 里。
 `[structurer].prompt_root` 必须指向一个目录，目录里要为每个任务提供一个 Markdown 模板。
+每个 Markdown 文件本身就是发送给 structurer 模型的最终 user prompt。
 
 典型 OpenAI-compatible 配置如下：
 
@@ -668,18 +671,18 @@ Structurer 的配置写在 `run-eval` 所使用 TOML 的 `[structurer]` section 
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "http://your-structurer-endpoint/v1"
-api_key_env = "EVAL_STRUCTURER_API_KEY"
-model = "gpt-4.1-mini"
-temperature = 0.0
-top_p = 1.0
-top_k = 1
-max_tokens = 512
-n = 1
-seed = 42
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer.extra_body.thinking]
+type = "disabled"
 ```
+
+`[structurer].extra_body` 会被原样透传到 OpenAI-compatible 请求体里。像 Kimi 这种 provider-specific 的额外字段，就放在这里。
+框架不再暴露可配置的 `[structurer].temperature`；对于 Kimi non-thinking，这个温度由服务端固定，不应该由客户端传入。
 
 如果只是本地 smoke test，也可以不调用外部 structurer API，直接使用：
 
@@ -690,6 +693,14 @@ prompt_root = "prompts/structurer_v1"
 invalid_json_retries = 1
 concurrency = 1
 ```
+
+当前 structurer 的行为约束：
+
+- prompt 是按任务细写的，不再是一套完全通用的模板
+- structurer 可以对 raw output 里的显式值做轻度整理
+- `question` 只用于帮助对齐当前任务需要哪些标准字段
+- 如果 raw output 里同时有分析过程和最终答案，structurer 应优先整理最终答案
+- structurer 不应凭空补出 raw output 里没有出现的 bbox、区间、tracking 或答案文本
 
 当前 retry 规则：
 
@@ -702,7 +713,7 @@ concurrency = 1
 ## Judge 配置
 
 Judge 的配置写在 `run-eval` 所使用 TOML 的 `[judge]` section 里。
-`[judge].prompt_path` 指向定义 judge system/user prompt 的 Markdown 文件。
+`[judge].prompt_path` 指向定义最终 user-only judge prompt 的 Markdown 文件。
 
 典型配置如下：
 
@@ -710,26 +721,41 @@ Judge 的配置写在 `run-eval` 所使用 TOML 的 `[judge]` section 里。
 [judge]
 backend = "openai"
 prompt_path = "prompts/judge_v1.md"
-base_url = "http://your-judge-endpoint/v1"
-api_key_env = "EVAL_JUDGE_API_KEY"
-model = "gpt-4.1-mini"
-temperature = 0.0
-top_p = 1.0
-top_k = 1
-max_tokens = 256
-n = 1
-seed = 42
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
 invalid_json_retries = 2
 concurrency = 1
+
+[judge.extra_body.thinking]
+type = "disabled"
 ```
+
+`[judge].extra_body` 也会原样进入请求体。对于 `kimi-k2.5 non-thinking`，可以这样写：
+
+```toml
+[judge]
+backend = "openai"
+prompt_path = "prompts/judge_v1.md"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
+invalid_json_retries = 2
+concurrency = 1
+
+[judge.extra_body.thinking]
+type = "disabled"
+```
+
+框架不再暴露可配置的 `[judge].temperature`；对于 Kimi non-thinking，这个温度由服务端固定，不应该由客户端传入。
 
 然后只在环境变量里提供密钥：
 
 ```bash
-export EVAL_JUDGE_API_KEY="your-api-key"
+export KIMI_API_KEY="your-api-key"
 ```
 
-当然，你也可以把 `api_key` 直接写进 TOML，但更推荐用 `api_key_env`。
+当然，你也可以把 `api_key` 直接写进 TOML，但更推荐用 `api_key_env`。如果 judge 和 structurer 都走 Kimi，它们可以共用同一个 `KIMI_API_KEY`。
 
 如果只是本地 smoke test，不想真的调 judge API，可以把 backend 改成：
 
@@ -899,24 +925,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 ## BERTScore
 
-需要先安装 `bertscore` extra：
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev --extra bertscore
-```
-
-然后运行时开启：
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config path/to/run_eval_with_bertscore.toml
-```
-
-对应配置：
-
-```toml
-[run_eval]
-enable_bertscore = true
-```
+只要任务提供了可比较的文本输入，评测时就会始终计算 BERTScore。
 
 说明：
 

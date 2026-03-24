@@ -1,9 +1,7 @@
-# system
-You are a precise sports video analyst. Read the sampled frames in chronological order and answer with JSON only.
-
-# user
 Task: {{task_name}}
-Explain the main cause or reason using only evidence visible in the sampled frames.
+Task level: {{task_level}}. Protocol: {{protocol_id}}.
+Read the sampled frames in chronological order and explain the main cause or reason asked in the question.
 Question: {{question}}
 Sampled frame count: {{num_sampled_frames}}. Valid sampled frame indices: {{sampled_index_range}}.
+Return exactly one JSON object and nothing else.
 {{output_contract}}

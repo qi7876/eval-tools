@@ -1,5 +1,5 @@
 [run_eval]
-prepared_root = "../../prepared_data"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
 protocol = "main"
 artifacts_root = "../../artifacts/runs"
 prompt_root = "../../prompts/benchmark_v1"
@@ -8,7 +8,6 @@ model_name = "mock"
 adapter = "mock"
 chain_manifest = "../../artifacts/chain_pairs.jsonl"
 enable_oracle_track = false
-enable_bertscore = false
 
 [judge]
 backend = "static-pass"
