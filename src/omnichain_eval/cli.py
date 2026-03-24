@@ -19,7 +19,7 @@ from .config import (
     load_validate_data_config,
 )
 from .constants import TASK_SPATIAL_IMAGINATION
-from .dataset import scan_dataset, summarize_records
+from .dataset import scan_dataset_report, summarize_scan_report
 from .experiments import (
     build_chain_manifest,
     evaluate_oracle_chain,
@@ -52,7 +52,7 @@ from .structurer import (
     StructurerService,
     load_structurer_prompt_pack,
 )
-from .utils import append_jsonl, ensure_directory, read_jsonl, write_json, write_jsonl
+from .utils import append_jsonl, ensure_directory, read_json, read_jsonl, write_json, write_jsonl
 
 
 @dataclass(slots=True)
@@ -396,24 +396,43 @@ def _render_prompts_for_samples(
 
 def cmd_validate_data(args: argparse.Namespace) -> int:
     config = load_validate_data_config(Path(args.config))
-    records, issues = scan_dataset(config.data_root)
-    summary = summarize_records(records)
-    print(f"Validated {summary['num_samples']} samples across {summary['num_videos']} videos.")
-    for task_name, count in summary["task_counts"].items():
-        print(f"  {task_name}: {count}")
-    if issues:
-        print(f"Found {len(issues)} issue(s).")
-        for issue in issues[:50]:
+    scan_report = scan_dataset_report(config.data_root)
+    status = summarize_scan_report(scan_report)
+    raw_summary = status["raw_dataset_summary"]
+    supported_summary = status["supported_dataset_summary"]
+    print(
+        f"Validated {raw_summary['num_samples']} raw samples across {raw_summary['num_videos']} videos."
+    )
+    print(
+        f"Supported samples: {supported_summary['num_samples']} "
+        f"across {supported_summary['num_videos']} videos."
+    )
+    if status["ignored_unsupported_sample_count"]:
+        print(
+            f"Ignored {status['ignored_unsupported_sample_count']} unsupported sample(s)."
+        )
+        for task_name, count in status["ignored_unsupported_task_counts"].items():
+            print(f"  unsupported {task_name}: {count}")
+    for task_name, count in supported_summary["task_counts"].items():
+        print(f"  supported {task_name}: {count}")
+    if scan_report.issues:
+        print(f"Found {len(scan_report.issues)} supported issue(s).")
+        for issue in scan_report.issues[:50]:
             print(f"  - {issue}")
         return 1
-    print("No validation issues found.")
+    print("No supported-task validation issues found.")
     return 0
 
 
 def cmd_build_chain_manifest(args: argparse.Namespace) -> int:
     config = load_build_chain_manifest_config(Path(args.config))
-    pairs = build_chain_manifest(config.data_root, config.out)
+    scan_report = scan_dataset_report(config.data_root)
+    pairs = build_chain_manifest(config.data_root, config.out, scan_report=scan_report)
     print(f"Wrote {len(pairs)} chain pairs to {config.out}")
+    if scan_report.unsupported_samples:
+        print(
+            f"Ignored {len(scan_report.unsupported_samples)} unsupported sample(s) while scanning."
+        )
     return 0
 
 
@@ -429,6 +448,10 @@ def cmd_prepare_data(args: argparse.Namespace) -> int:
             f"Prepared {result['num_prepared_samples']} samples for {result['protocol_id']} "
             f"at {result['protocol_root']}"
         )
+        if result["ignored_unsupported_sample_count"]:
+            print(
+                f"  ignored unsupported samples: {result['ignored_unsupported_sample_count']}"
+            )
     return 0
 
 
@@ -935,6 +958,8 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
             ],
         )
 
+    protocol_manifest = read_json(config.prepared_root / config.protocol / "build_manifest.json")
+
     completed_total = len(
         [sample_id for sample_id in existing_records_by_sample_id if sample_id in target_sample_ids]
     )
@@ -1001,6 +1026,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         "overall": evaluation["overall"],
         "task_summaries": [summary.to_dict() for summary in evaluation["task_summaries"]],
         "experiment_b": oracle_summary,
+        "data_status": protocol_manifest["data_status"],
         "run_status": run_status,
     }
     write_json(summary_path, summary_payload)

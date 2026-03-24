@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +23,22 @@ from .constants import (
 )
 from .schema import SampleRecord, VideoMetadata
 from .utils import canonical_interval, parse_interval_string, read_json, stable_hash
+
+
+@dataclass(slots=True)
+class UnsupportedSample:
+    sample_id: str
+    annotation_id: str
+    video_key: str
+    task_name: str
+    source_annotation_path: Path
+
+
+@dataclass(slots=True)
+class DatasetScanReport:
+    supported_records: list[SampleRecord]
+    unsupported_samples: list[UnsupportedSample]
+    issues: list[str]
 
 
 def iter_annotation_files(data_root: Path) -> list[Path]:
@@ -155,17 +172,30 @@ def _parse_video_metadata(payload: dict[str, Any]) -> VideoMetadata:
 def load_annotation_file(
     annotation_path: Path,
     data_root: Path,
-) -> tuple[list[SampleRecord], list[str]]:
+) -> tuple[list[SampleRecord], list[UnsupportedSample], list[str]]:
     payload = read_json(annotation_path)
     video_metadata = _parse_video_metadata(payload)
     video_path = annotation_path.with_suffix(".mp4")
     records: list[SampleRecord] = []
+    unsupported_samples: list[UnsupportedSample] = []
     issues: list[str] = []
     for annotation in payload.get("annotations", []):
         annotation_id = str(annotation.get("annotation_id", "<missing>"))
         try:
             task_name = annotation["task_L2"]
             sample_id = build_sample_id(annotation_path, annotation_id, data_root)
+            video_key = build_video_key(annotation_path, data_root)
+            if task_name not in ALL_TASKS:
+                unsupported_samples.append(
+                    UnsupportedSample(
+                        sample_id=sample_id,
+                        annotation_id=annotation_id,
+                        video_key=video_key,
+                        task_name=task_name,
+                        source_annotation_path=annotation_path,
+                    )
+                )
+                continue
             q_window = (
                 canonical_interval(annotation["Q_window_frame"])
                 if "Q_window_frame" in annotation
@@ -183,7 +213,7 @@ def load_annotation_file(
             record = SampleRecord(
                 sample_id=sample_id,
                 annotation_id=annotation_id,
-                video_key=build_video_key(annotation_path, data_root),
+                video_key=video_key,
                 task_name=task_name,
                 task_level=str(annotation["task_L1"]),
                 question_text=_question_text(annotation),
@@ -210,7 +240,7 @@ def load_annotation_file(
             )
             continue
         records.append(record)
-    return records, issues
+    return records, unsupported_samples, issues
 
 
 def _validate_sample_structure(sample: SampleRecord) -> list[str]:
@@ -238,16 +268,18 @@ def _validate_sample_structure(sample: SampleRecord) -> list[str]:
     return issues
 
 
-def scan_dataset(data_root: Path) -> tuple[list[SampleRecord], list[str]]:
+def scan_dataset_report(data_root: Path) -> DatasetScanReport:
     records: list[SampleRecord] = []
+    unsupported_samples: list[UnsupportedSample] = []
     issues: list[str] = []
     for annotation_path in iter_annotation_files(data_root):
         try:
-            file_records, file_issues = load_annotation_file(annotation_path, data_root)
+            file_records, file_unsupported, file_issues = load_annotation_file(annotation_path, data_root)
         except Exception as exc:  # noqa: BLE001
             issues.append(f"{annotation_path}: failed to load annotation file: {exc}")
             continue
         issues.extend(file_issues)
+        unsupported_samples.extend(file_unsupported)
         for record in file_records:
             records.append(record)
             issues.extend(_validate_sample_structure(record))
@@ -270,15 +302,26 @@ def scan_dataset(data_root: Path) -> tuple[list[SampleRecord], list[str]]:
             issues.append(
                 f"{record.sample_id}: upstream task {target.task_name} is not allowed"
             )
-    return sorted(records, key=lambda item: item.sample_id), issues
+    return DatasetScanReport(
+        supported_records=sorted(records, key=lambda item: item.sample_id),
+        unsupported_samples=sorted(unsupported_samples, key=lambda item: item.sample_id),
+        issues=issues,
+    )
+
+
+def scan_dataset(data_root: Path) -> tuple[list[SampleRecord], list[str]]:
+    report = scan_dataset_report(data_root)
+    return report.supported_records, report.issues
 
 
 def load_dataset(data_root: Path, *, strict: bool = True) -> list[SampleRecord]:
-    records, issues = scan_dataset(data_root)
-    if strict and issues:
-        issue_text = "\n".join(issues[:50])
-        raise ValueError(f"dataset validation failed with {len(issues)} issue(s):\n{issue_text}")
-    return records
+    report = scan_dataset_report(data_root)
+    if strict and report.issues:
+        issue_text = "\n".join(report.issues[:50])
+        raise ValueError(
+            f"dataset validation failed with {len(report.issues)} issue(s):\n{issue_text}"
+        )
+    return report.supported_records
 
 
 def dataset_fingerprint(records: list[SampleRecord]) -> str:
@@ -304,4 +347,29 @@ def summarize_records(records: list[SampleRecord]) -> dict[str, Any]:
         "num_videos": len({record.video_key for record in records}),
         "task_counts": dict(sorted(counts.items())),
         "overall_tasks": sorted(ALL_TASKS),
+    }
+
+
+def summarize_scan_report(report: DatasetScanReport) -> dict[str, Any]:
+    raw_task_counts: dict[str, int] = defaultdict(int)
+    raw_video_keys = {record.video_key for record in report.supported_records}
+    for record in report.supported_records:
+        raw_task_counts[record.task_name] += 1
+    unsupported_task_counts: dict[str, int] = defaultdict(int)
+    for sample in report.unsupported_samples:
+        raw_task_counts[sample.task_name] += 1
+        unsupported_task_counts[sample.task_name] += 1
+        raw_video_keys.add(sample.video_key)
+    return {
+        "raw_dataset_summary": {
+            "num_samples": len(report.supported_records) + len(report.unsupported_samples),
+            "num_videos": len(raw_video_keys),
+            "task_counts": dict(sorted(raw_task_counts.items())),
+            "overall_tasks": sorted(raw_task_counts),
+        },
+        "supported_dataset_summary": summarize_records(report.supported_records),
+        "ignored_unsupported_sample_count": len(report.unsupported_samples),
+        "ignored_unsupported_task_counts": dict(sorted(unsupported_task_counts.items())),
+        "supported_issue_count": len(report.issues),
+        "supported_issues": report.issues[:100],
     }

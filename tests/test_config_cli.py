@@ -192,13 +192,15 @@ protocols = ["main", "expd_window_32s_2fps"]
                 "num_prepared_samples": 3,
                 "protocol_id": "main",
                 "protocol_root": str(prepared_root / "main"),
-                "dataset_issue_count": 0,
+                "supported_issue_count": 0,
+                "ignored_unsupported_sample_count": 0,
             },
             {
                 "num_prepared_samples": 2,
                 "protocol_id": "expd_window_32s_2fps",
                 "protocol_root": str(prepared_root / "expd_window_32s_2fps"),
-                "dataset_issue_count": 0,
+                "supported_issue_count": 0,
+                "ignored_unsupported_sample_count": 0,
             },
         ]
 

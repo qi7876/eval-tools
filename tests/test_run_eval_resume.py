@@ -289,6 +289,7 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
     run_dir = artifacts_root / "retry-run"
     first_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     first_status = first_summary["run_status"]
+    assert first_summary["data_status"]["ignored_unsupported_sample_count"] == 0
     pending_ids = first_status["structured_not_evaluated_sample_ids"]
     assert len(pending_ids) == 1
 
@@ -304,6 +305,7 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
     assert adapter.calls == []
     second_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     second_status = second_summary["run_status"]
+    assert second_summary["data_status"]["ignored_unsupported_sample_count"] == 0
     assert second_status["structured_not_evaluated_sample_ids"] == []
     sample_result_rows = (run_dir / "results.jsonl").read_text(encoding="utf-8").strip().splitlines()
     structured_rows = (
@@ -386,6 +388,7 @@ def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, 
     assert messages[1]["content"] == expected_upstream_output
 
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["data_status"]["ignored_unsupported_sample_count"] == 0
     assert summary["run_status"]["pending_chain_prediction_sample_ids"] == []
     assert summary["run_status"]["chain_predicted_not_structured_sample_ids"] == []
     assert summary["run_status"]["chain_structured_not_evaluated_sample_ids"] == []

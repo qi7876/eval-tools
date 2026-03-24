@@ -12,7 +12,7 @@ from .constants import (
     TASK_CONTINUOUS_ACTIONS,
     TASK_STG,
 )
-from .dataset import load_dataset
+from .dataset import DatasetScanReport, scan_dataset_report
 from .judge import JudgeClient
 from .metrics import evaluate_sample, summarize_task_records
 from .prompting import PromptTemplate, build_chain_history, build_model_input, render_prompt
@@ -28,8 +28,19 @@ from .structurer import StructurerService
 from .utils import read_jsonl, write_jsonl
 
 
-def build_chain_manifest(data_root: Path, output_path: Path) -> list[ChainPairRecord]:
-    records = load_dataset(data_root, strict=True)
+def build_chain_manifest(
+    data_root: Path,
+    output_path: Path,
+    *,
+    scan_report: DatasetScanReport | None = None,
+) -> list[ChainPairRecord]:
+    report = scan_report or scan_dataset_report(data_root)
+    if report.issues:
+        issue_text = "\n".join(report.issues[:50])
+        raise ValueError(
+            f"dataset validation failed with {len(report.issues)} issue(s):\n{issue_text}"
+        )
+    records = report.supported_records
     by_source_file: dict[Path, dict[str, Any]] = defaultdict(dict)
     for record in records:
         by_source_file[record.source_annotation_path][record.annotation_id] = record

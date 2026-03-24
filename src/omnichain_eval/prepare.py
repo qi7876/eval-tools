@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - environment dependent
 import cv2
 from PIL import Image
 
-from .dataset import dataset_fingerprint, load_dataset, summarize_records
+from .dataset import dataset_fingerprint, scan_dataset_report, summarize_scan_report
 from .protocols import (
     get_protocol,
     original_interval_to_sampled_interval,
@@ -229,7 +229,7 @@ def build_protocol_cache(
     protocol: ProtocolSpec,
     prepared_root: Path,
     *,
-    dataset_issues: list[str] | None = None,
+    data_status: dict[str, Any],
 ) -> dict[str, Any]:
     protocol_root = ensure_directory(prepared_root / protocol.protocol_id)
     samples_root = ensure_directory(protocol_root / "samples")
@@ -273,15 +273,20 @@ def build_protocol_cache(
 
     index_rows.sort(key=lambda row: row["sample_id"])
     write_jsonl(protocol_root / "index.jsonl", index_rows)
-    write_json(protocol_root / "stats.json", _protocol_stats(prepared_samples))
+    stats_payload = _protocol_stats(prepared_samples)
+    stats_payload["ignored_unsupported_sample_count"] = data_status[
+        "ignored_unsupported_sample_count"
+    ]
+    stats_payload["ignored_unsupported_task_counts"] = data_status[
+        "ignored_unsupported_task_counts"
+    ]
+    write_json(protocol_root / "stats.json", stats_payload)
     write_json(
         protocol_root / "build_manifest.json",
         {
             "protocol": protocol.to_dict(),
-            "dataset_summary": summarize_records(records),
-            "dataset_fingerprint": dataset_fingerprint(records),
-            "dataset_issue_count": len(dataset_issues or []),
-            "dataset_issues": (dataset_issues or [])[:100],
+            "data_status": data_status,
+            "supported_dataset_fingerprint": dataset_fingerprint(records),
             "num_prepared_samples": len(prepared_samples),
         },
     )
@@ -289,7 +294,8 @@ def build_protocol_cache(
         "protocol_id": protocol.protocol_id,
         "protocol_root": str(protocol_root),
         "num_prepared_samples": len(prepared_samples),
-        "dataset_issue_count": len(dataset_issues or []),
+        "supported_issue_count": data_status["supported_issue_count"],
+        "ignored_unsupported_sample_count": data_status["ignored_unsupported_sample_count"],
     }
 
 
@@ -298,7 +304,14 @@ def build_prepared_data(
     prepared_root: Path,
     protocol_ids: list[str],
 ) -> list[dict[str, Any]]:
-    records = load_dataset(data_root, strict=True)
+    scan_report = scan_dataset_report(data_root)
+    if scan_report.issues:
+        issue_text = "\n".join(scan_report.issues[:50])
+        raise ValueError(
+            f"dataset validation failed with {len(scan_report.issues)} issue(s):\n{issue_text}"
+        )
+    records = scan_report.supported_records
+    data_status = summarize_scan_report(scan_report)
     results = []
     for protocol_id in protocol_ids:
         protocol = get_protocol(protocol_id)
@@ -307,7 +320,7 @@ def build_prepared_data(
                 records,
                 protocol,
                 prepared_root,
-                dataset_issues=[],
+                data_status=data_status,
             )
         )
     return results
