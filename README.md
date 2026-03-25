@@ -210,14 +210,15 @@ What it does:
 
 Behavior:
 
-- exits `0` if there are no issues
-- exits `1` if any issue is found
+- exits `0` if supported tasks have no validation issues
+- exits `1` if any supported-task issue is found
 - prints up to 50 issues to the terminal
 
 Important:
 
-- invalid annotations are reported individually
-- a broken sample does not automatically make the whole file unusable during prepared-data generation
+- unsupported tasks such as `Commentary` are reported separately and ignored by the main evaluation pipeline
+- invalid supported annotations are reported individually
+- a broken supported sample does not automatically make the whole file unusable during prepared-data generation
 
 ### 2. Build the Experiment B chain manifest
 
@@ -229,10 +230,14 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 What it does:
 
-- reads every `Spatial_Imagination` sample
+- reads every supported `Spatial_Imagination` sample
 - resolves its `upstream_annotation_id`
 - validates that the upstream task is either `Continuous_Actions_Caption` or `Spatial_Temporal_Grounding`
 - emits one JSONL row per chain pair
+
+Important:
+
+- unsupported tasks are ignored during scanning and do not block chain-manifest generation
 
 Output schema:
 
@@ -273,6 +278,12 @@ What it does:
 - applies the protocol-specific sampling rule
 - decodes the required frames
 - writes each sample as a prepared bundle
+
+Important:
+
+- only supported benchmark tasks are prepared
+- unsupported tasks are ignored and recorded in protocol metadata
+- supported-task validation errors still fail the command before cache generation
 
 The cache is sample-centric. The runtime evaluation path reads from the configured `prepared_root` instead of decoding raw videos again.
 
@@ -372,10 +383,11 @@ For tracking tasks:
 Protocol-level metadata:
 
 - protocol spec
-- dataset summary
-- dataset fingerprint
+- `data_status` with raw-dataset counts, supported-dataset counts, ignored unsupported task counts, and supported issue counts
+- `supported_dataset_fingerprint`
 - number of prepared samples
-- validated dataset metadata for the build
+
+`stats.json` also includes `ignored_unsupported_sample_count` and `ignored_unsupported_task_counts`.
 
 ## Live Adapter Evaluation
 
@@ -793,6 +805,7 @@ Artifact semantics:
 
 `summary.json` includes:
 
+- `data_status` copied from the protocol `build_manifest.json`
 - total target sample count for this run
 - completed counts before this invocation, in this invocation, and in total
 - `pending_prediction_sample_ids`
@@ -806,6 +819,8 @@ Artifact semantics:
 - `chain_structured_not_evaluated_sample_ids`
 - `blocked_chain_sample_ids`
 - error summaries for normal, chain, and oracle evaluation in this invocation
+
+Unsupported-task information lives in `data_status`. Unsupported samples are not counted as runtime pending items and are not included in task accuracies.
 
 ## Running Experiment B
 
@@ -894,7 +909,8 @@ The framework follows deterministic failure rules:
 Additionally:
 
 - duplicate tracking predictions on the same sampled frame are collapsed by keeping the first one
-- invalid raw annotations are skipped during prepared-data build and recorded in `build_manifest.json`
+- unsupported raw tasks are ignored and recorded in `build_manifest.json` / `summary.json`
+- supported-task validation problems still stop `prepare-data`
 
 ## Running Tests
 

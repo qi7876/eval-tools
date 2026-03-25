@@ -1,0 +1,456 @@
+# Adapter Implementation Guide For A Coding Agent
+
+This document is the implementation handoff for wiring a concrete video model into the current OmniChainBench evaluation framework.
+
+It is written against the current code in this repository, not against earlier designs.
+
+## Goal
+
+Implement one importable adapter class that lets:
+
+```bash
+uv run omnichain-eval run-eval --config <run_eval.toml>
+```
+
+call the model through the framework and produce the normal runtime artifacts:
+
+- `predictions.jsonl`
+- `structured_predictions.jsonl`
+- `results.jsonl`
+- `chain_predictions.jsonl`
+- `chain_structured_predictions.jsonl`
+- `chain_results.jsonl`
+- `summary.json`
+
+The adapter must be minimal. The framework already owns prompt construction, chain-history construction, structuring, judging, scoring, artifact writing, and resume.
+
+## Read These Files First
+
+- [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py)
+- [src/omnichain_eval/schema.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/schema.py)
+- [src/omnichain_eval/prompting.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prompting.py)
+- [src/omnichain_eval/cli.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/cli.py)
+- [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)
+- [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)
+- [README.md](/home/qi7876/dev/eval-tools/README.md)
+
+## Current Framework Contract
+
+### Adapter interface
+
+The only required interface is:
+
+```python
+class BaseModelAdapter(ABC):
+    def predict(self, model_input: ModelInput) -> str: ...
+```
+
+Optional:
+
+```python
+def supports_oracle_track(self) -> bool:
+    return False
+```
+
+If the adapter returns `True` there, `run-eval` may run extra OracleTrack reruns for Experiment B.
+
+### What `ModelInput` contains
+
+The adapter receives [ModelInput](/home/qi7876/dev/eval-tools/src/omnichain_eval/schema.py#L132):
+
+- `model_input.sample`: full [PreparedSample](/home/qi7876/dev/eval-tools/src/omnichain_eval/schema.py#L62)
+- `model_input.messages`: ordered chat-style prompt messages
+- `model_input.oracle_track`: `True` only for OracleTrack reruns
+
+Useful `PreparedSample` fields:
+
+- `sample.sample_id`
+- `sample.task_name`
+- `sample.question_text`
+- `sample.frame_files`
+- `sample.sampled_frames_original`
+- `sample.sampled_to_original`
+- `sample.metadata["bundle_dir"]`
+
+Important detail:
+
+- `load_prepared_samples()` rewrites `sample.frame_files` to absolute paths at runtime in [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py#L329).
+- The adapter can open frame files directly from those absolute paths.
+
+### What the framework already does
+
+Do not re-implement any of this inside the adapter:
+
+- task-specific prompt template rendering
+- output-format instruction injection
+- multi-turn chain history construction
+- raw-output structuring
+- llm-as-a-judge scoring
+- metric computation
+- artifact persistence
+- resume from existing `*.jsonl` files
+
+The framework constructs the input and the adapter only feeds it into the model.
+
+## Message Semantics You Must Preserve
+
+### Non-chain samples
+
+For normal tasks, `model_input.messages` contains one final user message:
+
+- role: `user`
+- content: the fully rendered benchmark prompt
+
+Use this rendered content, not `sample.question_text`, as the actual final prompt sent to the model.
+
+### Chain downstream samples
+
+For `Spatial_Imagination` downstream evaluation, the framework automatically builds history in [build_chain_history()](/home/qi7876/dev/eval-tools/src/omnichain_eval/prompting.py#L142).
+
+The adapter will receive messages in this exact order:
+
+1. upstream user question text
+2. upstream assistant raw model output
+3. downstream rendered user prompt
+
+This is verified in [tests/test_run_eval_resume.py](/home/qi7876/dev/eval-tools/tests/test_run_eval_resume.py#L338).
+
+Do not drop or rewrite this history. If the model API accepts chat messages, pass them through in order. If the model only accepts one text prompt, flatten the messages while preserving roles and order.
+
+## Responsibilities Split
+
+### The adapter owns
+
+- loading the model
+- caching the loaded model inside the adapter instance
+- turning `frame_files + messages` into the model's native inference input
+- calling generation
+- returning the raw model output string
+
+### The adapter does not own
+
+- JSON validation
+- bbox/tracking parsing
+- any fallback post-processing with another LLM
+- prompt-template selection
+- chain-history assembly
+- dataset scanning
+- any report/summary logic
+
+## Recommended Implementation Shape
+
+Preferred location if you want the adapter inside this repo:
+
+- `src/omnichain_eval/adapters/<model_name>.py`
+
+Alternative:
+
+- any importable module path in the same Python environment, as long as TOML can reference it via `module.path:ClassName`
+
+Keep the adapter file thin. Put model-specific helper functions near it only if needed.
+
+## Required Behavior
+
+### 1. Lazy model loading
+
+Load heavy model state lazily, for example in `__init__()` or in a dedicated `_ensure_loaded()` method called from `predict()`.
+
+Reason:
+
+- `resolve_adapter()` instantiates the class once
+- `run-eval` reuses that adapter instance across the whole run
+- loading per sample would be unusably slow
+
+### 2. Raw output only
+
+`predict()` must return the raw model answer string.
+
+Do not:
+
+- parse it into JSON
+- normalize field names
+- inject empty placeholders
+- call the structurer yourself
+- call the judge yourself
+
+That work now belongs entirely to the framework.
+
+### 3. Use the full rendered prompt
+
+The last user message already includes task-specific instructions and the required output contract. The adapter should treat `model_input.messages` as the source of truth.
+
+### 4. Preserve chain history
+
+For downstream chain samples, forward the full history into the model. The adapter must not collapse the request to just the downstream question.
+
+### 5. Respect `oracle_track`
+
+If the model can support the OracleTrack rerun mode, implement:
+
+```python
+def supports_oracle_track(self) -> bool:
+    return True
+```
+
+and use `model_input.oracle_track` if your model needs different prompting or control flow in that mode.
+
+If the model has no real OracleTrack support, leave this as `False`. Do not fake support.
+
+## Strong Recommendations
+
+### Prefer in-process integration
+
+Preferred path:
+
+- import the model's Python entrypoint
+- load weights in-process
+- call inference directly
+
+Do not introduce a separate offline mode. This repository intentionally removed offline evaluation mode.
+
+If the model truly cannot run in the same environment, stop and report the exact blocker instead of silently designing a second evaluation path.
+
+### Flatten messages explicitly if needed
+
+Many video models do not support chat messages directly. In that case, add one explicit formatter, for example:
+
+```python
+def _flatten_messages(messages: list[dict[str, str]]) -> str:
+    parts = []
+    for message in messages:
+        role = message["role"].strip().upper()
+        content = message["content"].strip()
+        parts.append(f"{role}:\n{content}")
+    return "\n\n".join(parts)
+```
+
+Use one deterministic format and keep it simple.
+
+### Fail loudly on true integration errors
+
+The framework already tolerates per-sample runtime failures and resume. The adapter should therefore raise real exceptions for:
+
+- missing weights
+- missing processor/tokenizer
+- unreadable frame paths
+- unsupported message format
+- failed model generation
+
+Do not hide these by returning fabricated text.
+
+## Implementation Checklist
+
+### Step 1. Find the model's narrowest reusable inference entrypoint
+
+Before writing the adapter, identify:
+
+- how the model accepts frames
+- whether it expects frame paths, PIL images, tensors, or video files
+- whether it accepts chat messages or a single text prompt
+- what generation function returns
+
+You want the smallest direct path from:
+
+- `list[str]` absolute frame paths
+- `list[PromptMessage]` conversation
+
+to:
+
+- one generated text string
+
+### Step 2. Decide adapter file placement
+
+Recommended:
+
+- add one adapter module under [src/omnichain_eval/adapters](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters)
+
+If the model code already lives elsewhere in the same environment, you can place a thin wrapper there instead.
+
+### Step 3. Implement the class
+
+Skeleton:
+
+```python
+from __future__ import annotations
+
+from omnichain_eval.adapters.base import BaseModelAdapter
+from omnichain_eval.schema import ModelInput
+
+
+class YourModelAdapter(BaseModelAdapter):
+    def __init__(self) -> None:
+        self._loaded = False
+        self._model = None
+        self._processor = None
+
+    @property
+    def name(self) -> str:
+        return "your-model-name"
+
+    def supports_oracle_track(self) -> bool:
+        return False
+
+    def _ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        # import model code here if import is heavy
+        # load weights / processor here
+        self._loaded = True
+
+    def predict(self, model_input: ModelInput) -> str:
+        self._ensure_loaded()
+        sample = model_input.sample
+        messages = model_input.messages_as_dicts()
+        frame_paths = sample.frame_files
+
+        # convert messages + frames to model-native input
+        # run generation
+        raw_text = ...
+
+        if not isinstance(raw_text, str):
+            raw_text = str(raw_text)
+        return raw_text
+```
+
+### Step 4. Map framework input to model input
+
+Typical mapping:
+
+- `sample.frame_files` -> image/frame loader for the model
+- `model_input.messages_as_dicts()` -> chat input or flattened text prompt
+- `model_input.oracle_track` -> optional special branch only if the model genuinely supports it
+
+Do not read GT from:
+
+- `sample.reference_payload`
+
+That field exists for internal mock/oracle workflows and must not be used by a real adapter.
+
+### Step 5. Add a runnable TOML example for the real adapter
+
+You will need a config similar to:
+
+```toml
+[run_eval]
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
+protocol = "main"
+artifacts_root = "../../artifacts/runs"
+prompt_root = "../../prompts/benchmark_v1"
+run_name = "your-model-main"
+model_name = "your-model"
+adapter = "omnichain_eval.adapters.your_model:YourModelAdapter"
+chain_manifest = "../../artifacts/chain_pairs.jsonl"
+enable_oracle_track = false
+
+[structurer]
+backend = "openai"
+prompt_root = "../../prompts/structurer_v1"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
+invalid_json_retries = 2
+
+[structurer.extra_body.thinking]
+type = "disabled"
+
+[judge]
+backend = "openai"
+prompt_path = "../../prompts/judge_v1.md"
+base_url = "https://api.moonshot.cn/v1"
+api_key_env = "KIMI_API_KEY"
+model = "kimi-k2.5"
+invalid_json_retries = 2
+
+[judge.extra_body.thinking]
+type = "disabled"
+```
+
+The framework owns structurer and judge configuration. Do not try to push model runtime knobs into this TOML unless the repository explicitly decides to support that later.
+
+### Step 6. Validate with a small run first
+
+Recommended execution order:
+
+1. `validate-data`
+2. `build-chain-manifest`
+3. `prepare-data`
+4. `run-eval` on a smoke subset if you have one, otherwise a normal small run
+
+At minimum, confirm:
+
+- the adapter imports correctly from TOML
+- the model loads once
+- the model receives absolute frame paths
+- chain downstream calls receive 3 messages in order
+- `predictions.jsonl` is populated
+- `structured_predictions.jsonl` and `results.jsonl` continue updating after predictions
+- rerunning the same `run_name` resumes instead of recomputing finished samples
+
+## Resume Behavior You Must Understand
+
+`run-eval` is resumable by artifact files in the run directory.
+
+Normal channel:
+
+- `predictions.jsonl`
+- `structured_predictions.jsonl`
+- `results.jsonl`
+
+Chain downstream channel:
+
+- `chain_predictions.jsonl`
+- `chain_structured_predictions.jsonl`
+- `chain_results.jsonl`
+
+The framework loads existing rows, backfills state, and skips already completed samples in [src/omnichain_eval/cli.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/cli.py#L488).
+
+Implication for the adapter:
+
+- returning raw text consistently is enough
+- you do not need any custom checkpointing in the adapter
+
+## Testing Expectations
+
+If you can add tests without needing the real model weights, do it.
+
+Good test targets:
+
+- message flattening helper
+- frame-path collection helper
+- lazy-load behavior
+- oracle-track flag routing if supported
+
+If real-model inference is too heavy for CI, do not force it into CI. Keep unit tests local to pure helpers and do manual smoke validation with the actual model.
+
+## Common Mistakes To Avoid
+
+- Using `sample.question_text` as the whole prompt and ignoring rendered `messages`
+- Ignoring chain history for downstream `Spatial_Imagination`
+- Reading `reference_payload` in a real adapter
+- Returning parsed dicts instead of raw strings
+- Doing extra JSON cleanup inside the adapter
+- Silently swallowing model failures and returning placeholder text
+- Adding a second offline evaluation path
+- Rebuilding any judge or structurer logic inside the adapter
+
+## Acceptance Criteria
+
+The adapter is complete when all of the following are true:
+
+1. `adapter = "module.path:ClassName"` resolves successfully.
+2. `run-eval` can call `predict()` on prepared samples without adapter-side prompt construction.
+3. Normal samples write to `predictions.jsonl` and continue through structuring and judging.
+4. Chain downstream samples write to `chain_predictions.jsonl` and preserve upstream question plus upstream raw answer in history.
+5. Re-running the same `run_name` resumes from existing artifacts.
+6. The adapter returns only raw model text and leaves structuring/judging to the framework.
+7. No Commentary-specific logic is added. Commentary is intentionally out of scope for this framework.
+
+## If You Hit An Environment Blocker
+
+Report the blocker in concrete terms:
+
+- exact import that fails
+- exact package or CUDA mismatch
+- exact model entrypoint that cannot be reused
+
+Do not solve that by inventing a parallel offline pipeline. The framework should stay on the single live-adapter path unless the repository owner explicitly changes direction.

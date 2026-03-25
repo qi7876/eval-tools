@@ -225,14 +225,15 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 返回行为：
 
-- 没有问题时退出码为 `0`
-- 有问题时退出码为 `1`
+- 支持任务没有校验问题时退出码为 `0`
+- 只要支持任务存在校验问题就退出码为 `1`
 - 终端打印前 50 个问题
 
 重要说明：
 
-- 当前实现按 annotation 粒度容错
-- 某个 sample 损坏时，只会跳过该 sample，不会整份 JSON 全部失效
+- `Commentary` 这类当前不支持的任务会单独统计并忽略，不会阻断主评测流程
+- 当前实现按支持任务的 annotation 粒度容错
+- 某个支持任务 sample 损坏时，只会跳过该 sample，不会整份 JSON 全部失效
 
 ## 第二步：生成 Experiment B 的 chain manifest
 
@@ -244,13 +245,17 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 这个命令会：
 
-- 找到所有 `Spatial_Imagination`
+- 找到所有受支持的 `Spatial_Imagination`
 - 读取其 `upstream_annotation_id`
 - 在同一个源 annotation 文件内定位上游 sample
 - 校验上游任务是否是：
   - `Continuous_Actions_Caption`
   - `Spatial_Temporal_Grounding`
 - 生成 Experiment B 所需的显式 pair 列表
+
+重要说明：
+
+- 当前不支持的任务会在扫描阶段被忽略，不会阻断 chain manifest 生成
 
 输出 JSONL 示例：
 
@@ -296,6 +301,12 @@ protocols = ["main"]
 - 把每个 sample 写成一个独立 bundle
 - 存储 sampled-to-original 映射
 - 存储任务评测需要的 GT sidecar
+
+重要说明：
+
+- 只有当前支持的 benchmark task 会进入 prepared-data
+- 不支持的任务会被忽略，并记录到协议元数据里
+- 支持任务本身如果有校验错误，`prepare-data` 仍然会直接失败
 
 ### 为什么要先构建 prepared data
 
@@ -400,10 +411,11 @@ prepared-data 方案解决了这些问题。
 协议级元数据，包括：
 
 - protocol 定义
-- dataset summary
-- dataset fingerprint
+- `data_status`，其中包含 raw dataset 计数、supported dataset 计数、ignored unsupported task 计数、supported issue 计数
+- `supported_dataset_fingerprint`
 - prepared sample 数量
-- 本次构建使用的已校验数据元信息
+
+此外，`stats.json` 也会额外写入 `ignored_unsupported_sample_count` 和 `ignored_unsupported_task_counts`。
 
 ## 第四步：运行评测
 
@@ -844,6 +856,7 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 
 `summary.json` 会额外记录：
 
+- `data_status`，直接继承自当前协议的 `build_manifest.json`
 - 本轮目标 sample 总数
 - 本轮开始前已完成数、本轮新完成数、累计完成数
 - `pending_prediction_sample_ids`
@@ -857,6 +870,8 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 - `chain_structured_not_evaluated_sample_ids`
 - `blocked_chain_sample_ids`
 - 本轮 normal / chain / oracle 失败摘要
+
+unsupported task 的信息只放在 `data_status` 中，不会混入 runtime 的 pending 计数，也不会进入 task accuracy。
 
 ## 运行 Experiment B
 
@@ -945,7 +960,8 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 此外：
 
 - 同一 sampled frame 上多个 tracking 预测会保留第一个
-- 原始数据中不合法的 annotation 会被跳过，并记录到 `build_manifest.json`
+- 原始数据中的 unsupported task 会被忽略，并记录到 `build_manifest.json` / `summary.json`
+- 支持任务本身的数据校验错误仍然会阻断 `prepare-data`
 
 ## 运行测试
 
