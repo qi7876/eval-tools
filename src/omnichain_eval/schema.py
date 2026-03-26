@@ -132,7 +132,6 @@ class RenderedPrompt:
 class ModelInput:
     sample: PreparedSample
     messages: list[PromptMessage]
-    oracle_track: bool = False
 
     def messages_as_dicts(self) -> list[dict[str, str]]:
         return [message.to_dict() for message in self.messages]

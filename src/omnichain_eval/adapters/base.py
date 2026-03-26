@@ -24,9 +24,6 @@ class BaseModelAdapter(ABC):
     def name(self) -> str:
         return self.__class__.__name__
 
-    def supports_oracle_track(self) -> bool:
-        return False
-
     @abstractmethod
     def predict(
         self,
@@ -38,15 +35,11 @@ class BaseModelAdapter(ABC):
 class MockAdapter(BaseModelAdapter):
     """Returns perfect answers from prepared GT payloads for smoke tests."""
 
-    def supports_oracle_track(self) -> bool:
-        return True
-
     def predict(
         self,
         model_input: ModelInput,
     ) -> str:
         sample = model_input.sample
-        oracle_track = model_input.oracle_track
         reference = sample.reference_payload
         payload: dict[str, object]
         if sample.task_name in TEXT_ONLY_TASKS:
@@ -67,10 +60,9 @@ class MockAdapter(BaseModelAdapter):
                 "tracking": reference.get("tracking_gt_sampled", []),
             }
         elif sample.task_name == TASK_STG:
-            tracking = [] if oracle_track else reference.get("tracking_gt_sampled", [])
             payload = {
                 "time_window_sampled": reference["time_window_sampled"],
-                "tracking": tracking,
+                "tracking": reference.get("tracking_gt_sampled", []),
             }
         else:
             raise ValueError(f"mock adapter does not support task {sample.task_name}")

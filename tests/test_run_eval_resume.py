@@ -5,12 +5,17 @@ from PIL import Image
 
 from omnichain_eval.adapters.base import BaseModelAdapter, MockAdapter
 from omnichain_eval.cli import main
-from omnichain_eval.experiments import build_chain_manifest
+from omnichain_eval.experiments import (
+    _force_oracle_tracking,
+    build_chain_manifest,
+    evaluate_oracle_chain_pair,
+    load_chain_pairs,
+)
 from omnichain_eval.judge import JudgeClient, JudgeResponseFormatExhaustedError, StaticJudgeClient
 from omnichain_eval.metrics import evaluate_sample
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
 from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
-from omnichain_eval.schema import ModelInput, StructuredPredictionRecord
+from omnichain_eval.schema import ModelInput, PreparedSample, StructuredPredictionRecord
 from omnichain_eval.structurer import (
     StaticParseStructurerBackend,
     StructurerService,
@@ -32,12 +37,11 @@ def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
     }
 
 
-def build_test_model_input(sample, *, oracle_track: bool = False) -> ModelInput:
+def build_test_model_input(sample) -> ModelInput:
     prompt_pack = load_prompt_pack(PROMPT_ROOT)
     return build_model_input(
         sample,
-        render_prompt(prompt_pack, sample, oracle_track=oracle_track),
-        oracle_track=oracle_track,
+        render_prompt(prompt_pack, sample),
     )
 
 
@@ -91,16 +95,41 @@ class CountingAdapter(BaseModelAdapter):
         return self._mock.predict(model_input)
 
 
+class OracleTrackingDroppingAdapter(BaseModelAdapter):
+    def __init__(self) -> None:
+        self.inputs: list[ModelInput] = []
+
+    @property
+    def name(self) -> str:
+        return "oracle-tracking-dropping"
+
+    def predict(self, model_input: ModelInput):
+        self.inputs.append(model_input)
+        sample = model_input.sample
+        if sample.task_name == "Continuous_Actions_Caption":
+            return json.dumps(
+                {
+                    "segments": sample.reference_payload["segments_sampled"],
+                    "tracking": [],
+                }
+            )
+        if sample.task_name == "Spatial_Imagination":
+            return json.dumps({"text": "The player continues the action because of the setup."})
+        return MockAdapter().predict(model_input)
+
+
 def _config_text(
     *,
     prepared_root: Path,
     artifacts_root: Path,
     run_name: str,
     chain_manifest: Path | None,
+    enable_oracle_track: bool = False,
     judge_invalid_json_retries: int = 0,
     structurer_invalid_json_retries: int = 0,
 ) -> str:
     chain_manifest_line = f'chain_manifest = "{chain_manifest}"\n' if chain_manifest else ""
+    oracle_track_line = "enable_oracle_track = true\n" if enable_oracle_track else ""
     return f"""
 [run_eval]
 prepared_root = "{prepared_root}"
@@ -110,6 +139,7 @@ prompt_root = "{PROMPT_ROOT}"
 run_name = "{run_name}"
 adapter = "mock"
 {chain_manifest_line}
+{oracle_track_line}
 
 [judge]
 backend = "static-pass"
@@ -423,3 +453,147 @@ def test_run_eval_requires_chain_manifest_for_spatial_imagination(monkeypatch, t
         assert "chain_manifest" in str(exc)
     else:  # pragma: no cover - defensive
         raise AssertionError("expected run-eval to fail without chain_manifest")
+
+
+def test_force_oracle_tracking_keeps_non_tracking_fields():
+    sample = PreparedSample(
+        sample_id="sample",
+        annotation_id="1",
+        video_key="video",
+        task_name="Spatial_Temporal_Grounding",
+        task_level="L2",
+        protocol_id="main",
+        question_text="Locate the action.",
+        sampled_frames_original=[0, 1, 2],
+        sampled_to_original={0: 0, 1: 1, 2: 2},
+        frame_files=[],
+        source_video_path="video.mp4",
+        source_annotation_path="anno.json",
+        reference_payload={
+            "time_window_original": [0, 2],
+            "tracking_gt_sampled": [{"frame_sampled": 1, "bbox_mot": [1, 2, 3, 4]}],
+        },
+    )
+    record = StructuredPredictionRecord(
+        sample_id="sample",
+        task_name="Spatial_Temporal_Grounding",
+        video_key="video",
+        protocol_id="main",
+        raw_output='{"time_window_sampled":[1,2],"tracking":[]}',
+        structured_prediction={
+            "time_window_sampled": [1, 2],
+            "tracking": [],
+        },
+        structuring_errors=[],
+        structuring_warnings=[],
+    )
+    forced = _force_oracle_tracking(sample, record)
+    assert forced.structured_prediction["time_window_sampled"] == [1, 2]
+    assert forced.structured_prediction["tracking"] == sample.reference_payload["tracking_gt_sampled"]
+
+
+def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_overrides_tracking_for_scoring(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    chain_manifest_path = tmp_path / "chain_pairs.jsonl"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
+
+    prepared_by_sample_id = {
+        sample.sample_id: sample for sample in load_prepared_samples(prepared_root, "main")
+    }
+    pair = load_chain_pairs(chain_manifest_path)[0]
+    adapter = OracleTrackingDroppingAdapter()
+    structurer_service = StructurerService(
+        backend=StaticParseStructurerBackend(),
+        prompt_pack=load_structurer_prompt_pack(STRUCTURER_PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    pair_result = evaluate_oracle_chain_pair(
+        adapter,
+        prepared_by_sample_id,
+        pair,
+        prompt_pack=load_prompt_pack(PROMPT_ROOT),
+        structurer_service=structurer_service,
+        judge_client=StaticJudgeClient(always_pass=True),
+    )
+
+    upstream_messages = adapter.inputs[0].messages_as_dicts()
+    assert [message["role"] for message in upstream_messages] == ["user"]
+    assert "OracleTrack rerun." in upstream_messages[0]["content"]
+    assert '"tracking_gt_sampled"' not in upstream_messages[0]["content"]
+    assert '"bbox_mot"' in upstream_messages[0]["content"]
+    assert pair_result["upstream"].raw_output == json.dumps(
+        {
+            "segments": prepared_by_sample_id[pair.upstream_sample_id].reference_payload["segments_sampled"],
+            "tracking": [],
+        }
+    )
+    assert pair_result["upstream"].component_pass["tracking_pass"] == 1
+
+    downstream_messages = adapter.inputs[1].messages_as_dicts()
+    assert [message["role"] for message in downstream_messages] == ["user", "assistant", "user"]
+    assert downstream_messages[0]["content"] == prepared_by_sample_id[pair.upstream_sample_id].question_text
+    assert downstream_messages[1]["content"] == pair_result["upstream"].raw_output
+
+
+def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    artifacts_root = tmp_path / "artifacts" / "runs"
+    chain_manifest_path = tmp_path / "chain_pairs.jsonl"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
+    adapter = CountingAdapter()
+
+    config_path = tmp_path / "run_eval_oracle.toml"
+    config_path.write_text(
+        _config_text(
+            prepared_root=prepared_root,
+            artifacts_root=artifacts_root,
+            run_name="oracle-run",
+            chain_manifest=chain_manifest_path,
+            enable_oracle_track=True,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr("omnichain_eval.cli.resolve_adapter", lambda spec: adapter)
+
+    first_exit_code = main(["run-eval", "--config", str(config_path)])
+
+    assert first_exit_code == 0
+    run_dir = artifacts_root / "oracle-run"
+    oracle_rows = (run_dir / "oracle_pair_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(oracle_rows) == 1
+    assert len(adapter.inputs["TestSport/TestEvent/1#2"]) == 2
+    assert len(adapter.inputs["TestSport/TestEvent/1#4"]) == 2
+    oracle_upstream_messages = adapter.inputs["TestSport/TestEvent/1#2"][1].messages_as_dicts()
+    assert "OracleTrack rerun." in oracle_upstream_messages[0]["content"]
+    first_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    experiment_b = first_summary["experiment_b"]
+    assert "chain_success" in experiment_b
+    assert "chain_success_wo_track" in experiment_b
+    assert "chain_success_wo_track_oracle" in experiment_b
+    assert "chain_success_oracle" not in experiment_b
+
+    adapter.calls.clear()
+    for sample_id in adapter.inputs:
+        adapter.inputs[sample_id].clear()
+
+    second_exit_code = main(["run-eval", "--config", str(config_path)])
+
+    assert second_exit_code == 0
+    assert adapter.calls == []

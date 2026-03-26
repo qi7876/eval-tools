@@ -941,6 +941,12 @@ $$
 CS_i = H_i \cdot R_i = P_i \cdot U_i \cdot R_i
 $$
 
+Chain success without track is:
+
+$$
+CS_i^{wo} = U_i \cdot R_i
+$$
+
 Benchmark-level metrics:
 
 $$
@@ -955,6 +961,10 @@ $$
 \text{ChainSuccess} = \frac{1}{N} \sum_{i=1}^{N} CS_i
 $$
 
+$$
+\text{ChainSuccessWoTrack} = \frac{1}{N} \sum_{i=1}^{N} CS_i^{wo}
+$$
+
 ### 13.3 OracleTrack
 
 In OracleTrack evaluation:
@@ -966,10 +976,10 @@ In OracleTrack evaluation:
 
 This is a real rerun of downstream evaluation, not a post-hoc metric recomputation on the original outputs.
 
-Define oracle understanding pass as
+Define oracle non-tracking understanding pass as
 
 $$
-H_i^{oracle}
+U_i^{oracle}
 $$
 
 and oracle reasoning pass as
@@ -981,13 +991,13 @@ $$
 Then:
 
 $$
-CS_i^{oracle} = H_i^{oracle} \cdot R_i^{oracle}
+CS_i^{wo,oracle} = U_i^{oracle} \cdot R_i^{oracle}
 $$
 
 and:
 
 $$
-\text{UnderstandingAcc@OracleTrack} = \frac{1}{N} \sum_{i=1}^{N} H_i^{oracle}
+\text{UnderstandingAcc@OracleTrack} = \frac{1}{N} \sum_{i=1}^{N} U_i^{oracle}
 $$
 
 $$
@@ -995,17 +1005,18 @@ $$
 $$
 
 $$
-\text{ChainSuccess@OracleTrack} = \frac{1}{N} \sum_{i=1}^{N} CS_i^{oracle}
+\text{ChainSuccessWoTrack@OracleTrack} = \frac{1}{N} \sum_{i=1}^{N} CS_i^{wo,oracle}
 $$
 
 Required Experiment B report items:
 
 - `Understanding Acc`
 - `Reasoning Acc`
+- `Chain Success`
+- `Chain Success (w/o Track)`
 - `Understanding Acc @ OracleTrack`
 - `Reasoning Acc @ OracleTrack`
-- `Chain Success`
-- `Chain Success @ OracleTrack`
+- `Chain Success (w/o Track)` in the OracleTrack rerun section
 
 ## 14. Experiment C: Protocol Comparison
 
@@ -1132,10 +1143,11 @@ For chain evaluation, store:
   "num_chain_samples": 0,
   "understanding_acc": 0.0,
   "reasoning_acc": 0.0,
+  "chain_success": 0.0,
+  "chain_success_wo_track": 0.0,
   "understanding_acc_oracle": 0.0,
   "reasoning_acc_oracle": 0.0,
-  "chain_success": 0.0,
-  "chain_success_oracle": 0.0
+  "chain_success_wo_track_oracle": 0.0
 }
 ```
 

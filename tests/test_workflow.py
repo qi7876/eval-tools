@@ -16,7 +16,7 @@ from omnichain_eval.experiments import (
 from omnichain_eval.judge import StaticJudgeClient
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
 from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
-from omnichain_eval.schema import StructuredPredictionRecord
+from omnichain_eval.schema import ChainPairRecord, EvaluationRecord, StructuredPredictionRecord
 from omnichain_eval.structurer import (
     StaticParseStructurerBackend,
     StructurerService,
@@ -54,6 +54,27 @@ def build_fixture_with_unsupported_task(tmp_path: Path) -> Path:
     )
     annotation_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return dataset_root
+
+
+def _evaluation_record(
+    sample_id: str,
+    task_name: str,
+    *,
+    component_pass: dict[str, int],
+) -> EvaluationRecord:
+    return EvaluationRecord(
+        sample_id=sample_id,
+        task_name=task_name,
+        video_key="TestSport/TestEvent/1",
+        protocol_id="main",
+        structured_prediction={},
+        structuring_errors=[],
+        structuring_warnings=[],
+        component_metrics={},
+        component_pass=component_pass,
+        task_pass=1,
+        raw_output="{}",
+    )
 
 
 def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
@@ -121,6 +142,60 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
     pairs = load_chain_pairs(chain_path)
     chain_summary = summarize_experiment_b(pairs, evaluation["records_by_sample_id"])
     assert chain_summary["chain_success"] == 1.0
+    assert chain_summary["chain_success_wo_track"] == 1.0
+
+
+def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
+    pairs = [
+        ChainPairRecord(
+            pair_id="down#1|up#1",
+            video_key="TestSport/TestEvent/1",
+            upstream_sample_id="up#1",
+            downstream_sample_id="down#1",
+            upstream_task_name="Continuous_Actions_Caption",
+        )
+    ]
+    records_by_sample_id = {
+        "up#1": _evaluation_record(
+            "up#1",
+            "Continuous_Actions_Caption",
+            component_pass={"tracking_pass": 0, "judge_pass": 1},
+        ),
+        "down#1": _evaluation_record(
+            "down#1",
+            "Spatial_Imagination",
+            component_pass={"judge_pass": 1},
+        ),
+    }
+    oracle_pair_results = {
+        "down#1|up#1": {
+            "upstream": _evaluation_record(
+                "up#1",
+                "Continuous_Actions_Caption",
+                component_pass={"tracking_pass": 1, "judge_pass": 1},
+            ),
+            "downstream": _evaluation_record(
+                "down#1",
+                "Spatial_Imagination",
+                component_pass={"judge_pass": 1},
+            ),
+        }
+    }
+
+    chain_summary = summarize_experiment_b(
+        pairs,
+        records_by_sample_id,
+        oracle_pair_results=oracle_pair_results,
+    )
+
+    assert chain_summary["understanding_acc"] == 0.0
+    assert chain_summary["reasoning_acc"] == 1.0
+    assert chain_summary["chain_success"] == 0.0
+    assert chain_summary["chain_success_wo_track"] == 1.0
+    assert chain_summary["understanding_acc_oracle"] == 1.0
+    assert chain_summary["reasoning_acc_oracle"] == 1.0
+    assert chain_summary["chain_success_wo_track_oracle"] == 1.0
+    assert "chain_success_oracle" not in chain_summary
 
 
 def test_unsupported_tasks_are_ignored_in_validation_prepare_and_chain(monkeypatch, tmp_path):

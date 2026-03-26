@@ -45,22 +45,12 @@ class BaseModelAdapter(ABC):
     def predict(self, model_input: ModelInput) -> str: ...
 ```
 
-Optional:
-
-```python
-def supports_oracle_track(self) -> bool:
-    return False
-```
-
-If the adapter returns `True` there, `run-eval` may run extra OracleTrack reruns for Experiment B.
-
 ### What `ModelInput` contains
 
 The adapter receives [ModelInput](/home/qi7876/dev/eval-tools/src/omnichain_eval/schema.py#L132):
 
 - `model_input.sample`: full [PreparedSample](/home/qi7876/dev/eval-tools/src/omnichain_eval/schema.py#L62)
 - `model_input.messages`: ordered chat-style prompt messages
-- `model_input.oracle_track`: `True` only for OracleTrack reruns
 
 Useful `PreparedSample` fields:
 
@@ -183,18 +173,9 @@ The last user message already includes task-specific instructions and the requir
 
 For downstream chain samples, forward the full history into the model. The adapter must not collapse the request to just the downstream question.
 
-### 5. Respect `oracle_track`
+### 5. Ignore OracleTrack implementation details
 
-If the model can support the OracleTrack rerun mode, implement:
-
-```python
-def supports_oracle_track(self) -> bool:
-    return True
-```
-
-and use `model_input.oracle_track` if your model needs different prompting or control flow in that mode.
-
-If the model has no real OracleTrack support, leave this as `False`. Do not fake support.
+OracleTrack is framework-owned. The framework injects GT tracking into the upstream rerun prompt and rebuilds the downstream history itself. The adapter does not need any OracleTrack-specific branch.
 
 ## Strong Recommendations
 
@@ -287,9 +268,6 @@ class YourModelAdapter(BaseModelAdapter):
     def name(self) -> str:
         return "your-model-name"
 
-    def supports_oracle_track(self) -> bool:
-        return False
-
     def _ensure_loaded(self) -> None:
         if self._loaded:
             return
@@ -318,7 +296,6 @@ Typical mapping:
 
 - `sample.frame_files` -> image/frame loader for the model
 - `model_input.messages_as_dicts()` -> chat input or flattened text prompt
-- `model_input.oracle_track` -> optional special branch only if the model genuinely supports it
 
 Do not read GT from:
 

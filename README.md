@@ -440,9 +440,6 @@ class MyAdapter(BaseModelAdapter):
     def name(self) -> str:
         return "my-model"
 
-    def supports_oracle_track(self) -> bool:
-        return False
-
     def predict(
         self,
         model_input: ModelInput,
@@ -455,7 +452,6 @@ class MyAdapter(BaseModelAdapter):
 The adapter now receives a `ModelInput` object. Important fields are:
 
 - `model_input.messages`: final rendered prompt messages, already built by the framework
-- `model_input.oracle_track`: whether this is an oracle rerun
 - `model_input.sample`: the full `PreparedSample`
 
 Inside `model_input.sample`, common fields include:
@@ -844,25 +840,17 @@ The current runner computes:
 - understanding accuracy
 - reasoning accuracy
 - chain success
+- chain success (w/o track)
 
 If oracle rerun information is available, it also computes:
 
 - `understanding_acc_oracle`
 - `reasoning_acc_oracle`
-- `chain_success_oracle`
+- `chain_success_wo_track_oracle`
 
 ## OracleTrack
 
-There are two supported OracleTrack paths.
-
-### Live adapter mode
-
-Your adapter must implement:
-
-```python
-def supports_oracle_track(self) -> bool:
-    return True
-```
+OracleTrack is framework-owned.
 
 Then run:
 
@@ -883,9 +871,9 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 What the framework does:
 
 - reruns the upstream and downstream pair through the adapter
-- sets `oracle_track=True` in the adapter call
+- injects GT tracking into the upstream rerun prompt
 - rebuilds downstream chain history from the upstream question plus upstream raw answer
-- replaces tracking with GT during upstream scoring where the task requires it
+- replaces tracking with GT during upstream oracle scoring
 
 ## BERTScore
 
@@ -962,7 +950,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 6. Return the raw model answer as a string.
 7. Run `run-eval --config your_model.toml` on `main`.
 8. Set `[run_eval].chain_manifest` to get Experiment B metrics.
-9. If needed, implement `supports_oracle_track()` and handle `oracle_track=True`.
+9. If needed, set `[run_eval].enable_oracle_track = true` and let the framework run OracleTrack reruns.
 10. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
 
 If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, prompt construction, chain accounting, structured extraction, scoring, and summary generation remain inside the framework.

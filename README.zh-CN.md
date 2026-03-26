@@ -484,9 +484,6 @@ class MyAdapter(BaseModelAdapter):
     def name(self) -> str:
         return "my-model"
 
-    def supports_oracle_track(self) -> bool:
-        return False
-
     def predict(
         self,
         model_input: ModelInput,
@@ -499,7 +496,6 @@ class MyAdapter(BaseModelAdapter):
 adapter 现在会收到一个 `ModelInput`。常用字段包括：
 
 - `model_input.messages`
-- `model_input.oracle_track`
 - `model_input.sample`
 
 其中 `model_input.sample` 里常见字段有：
@@ -895,25 +891,17 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 - understanding accuracy
 - reasoning accuracy
 - chain success
+- chain success (w/o track)
 
 如果提供了 OracleTrack rerun，还会额外计算：
 
 - `understanding_acc_oracle`
 - `reasoning_acc_oracle`
-- `chain_success_oracle`
+- `chain_success_wo_track_oracle`
 
 ## OracleTrack
 
-有两种路径。
-
-### 在线 adapter 模式
-
-如果你的 adapter 支持 OracleTrack，需要实现：
-
-```python
-def supports_oracle_track(self) -> bool:
-    return True
-```
+OracleTrack 现在完全由框架实现。
 
 然后运行：
 
@@ -934,9 +922,9 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 此时框架会：
 
 - 对 chain pair 做 rerun
-- 调用 adapter 时传入 `oracle_track=True`
+- 在 upstream rerun prompt 中直接注入 GT tracking
 - 下游输入会重新基于“上游问题 + 上游原始回答”构建链式历史
-- 在上游评分时用 GT tracking 替换 tracking 分量
+- 在上游 oracle 评分时用 GT tracking 替换 tracking 分量
 
 ## BERTScore
 
@@ -1015,7 +1003,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 6. 让 adapter 直接返回模型原始回答字符串
 7. 先跑 `run-eval --config your_model.toml` 对 `main` 协议评测
 8. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
-9. 如需 OracleTrack，再实现 `supports_oracle_track()`
+9. 如需 OracleTrack，在 TOML 中设置 `[run_eval].enable_oracle_track = true`
 10. 最后为 Experiment D 协议分别写 TOML，并复用相同的 prepared cache
 
 如果按这个方式做，模型接入层会很薄：

@@ -21,8 +21,9 @@ from .config import (
 from .constants import TASK_SPATIAL_IMAGINATION
 from .dataset import scan_dataset_report, summarize_scan_report
 from .experiments import (
+    OraclePairError,
     build_chain_manifest,
-    evaluate_oracle_chain,
+    evaluate_oracle_chain_pair,
     load_chain_pairs,
     load_prepared_for_protocol,
     summarize_evaluation_records,
@@ -844,45 +845,34 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     if config.chain_manifest:
         oracle_pair_results = _load_existing_oracle_pair_results(oracle_pair_results_path)
         if config.enable_oracle_track:
-            if not adapter.supports_oracle_track():
-                raise ValueError(f"adapter {adapter.name} does not support oracle_track reruns")
-            try:
-                fresh_oracle_pair_results = evaluate_oracle_chain(
-                    adapter,
-                    prepared_by_sample_id,
-                    chain_pairs,
-                    prompt_pack=prompt_pack,
-                    structurer_service=structurer_service,
-                    judge_client=judge_client,
-                )
-            except Exception as exc:  # noqa: BLE001
-                oracle_errors_this_run.append(
-                    {
-                        "pair_id": "batch",
-                        "stage": (
-                            "oracle_judge"
-                            if isinstance(exc, JudgeResponseFormatExhaustedError)
-                            else (
-                                "oracle_structuring"
-                                if isinstance(exc, StructurerResponseFormatExhaustedError)
-                                else "oracle_evaluation"
-                            )
-                        ),
-                        "reason": f"{type(exc).__name__}: {exc}",
-                    }
-                )
-            else:
-                for pair in chain_pairs:
-                    pair_result = fresh_oracle_pair_results.get(pair.pair_id)
-                    if pair_result is None:
-                        continue
-                    oracle_pair_results[pair.pair_id] = pair_result
-                    _append_oracle_pair_result(
-                        oracle_pair_results_path,
-                        pair.pair_id,
-                        pair_result["upstream"],
-                        pair_result["downstream"],
+            for pair in chain_pairs:
+                if pair.pair_id in oracle_pair_results:
+                    continue
+                try:
+                    pair_result = evaluate_oracle_chain_pair(
+                        adapter,
+                        prepared_by_sample_id,
+                        pair,
+                        prompt_pack=prompt_pack,
+                        structurer_service=structurer_service,
+                        judge_client=judge_client,
                     )
+                except OraclePairError as exc:
+                    oracle_errors_this_run.append(
+                        {
+                            "pair_id": exc.pair_id,
+                            "stage": exc.stage,
+                            "reason": f"{type(exc.cause).__name__}: {exc.cause}",
+                        }
+                    )
+                    continue
+                oracle_pair_results[pair.pair_id] = pair_result
+                _append_oracle_pair_result(
+                    oracle_pair_results_path,
+                    pair.pair_id,
+                    pair_result["upstream"],
+                    pair_result["downstream"],
+                )
 
         oracle_summary = summarize_experiment_b(
             chain_pairs,

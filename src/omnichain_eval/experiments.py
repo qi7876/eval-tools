@@ -10,12 +10,17 @@ from .adapters.base import BaseModelAdapter
 from .constants import (
     BERTSCORE_MODEL,
     TASK_CONTINUOUS_ACTIONS,
-    TASK_STG,
 )
 from .dataset import DatasetScanReport, scan_dataset_report
 from .judge import JudgeClient
 from .metrics import evaluate_sample, summarize_task_records
-from .prompting import PromptTemplate, build_chain_history, build_model_input, render_prompt
+from .prompting import (
+    PromptTemplate,
+    build_chain_history,
+    build_model_input,
+    render_oracle_upstream_prompt,
+    render_prompt,
+)
 from .prepare import load_prepared_samples
 from .schema import (
     ChainPairRecord,
@@ -26,6 +31,42 @@ from .schema import (
 )
 from .structurer import StructurerService
 from .utils import read_jsonl, write_jsonl
+
+
+class OraclePairError(RuntimeError):
+    def __init__(self, pair_id: str, stage: str, cause: Exception):
+        super().__init__(f"{pair_id} failed at {stage}: {cause}")
+        self.pair_id = pair_id
+        self.stage = stage
+        self.cause = cause
+
+
+def _force_oracle_tracking(
+    sample: PreparedSample,
+    structured_record: StructuredPredictionRecord,
+) -> StructuredPredictionRecord:
+    structured_prediction = structured_record.structured_prediction
+    if structured_prediction is None:
+        return structured_record
+    oracle_tracking = sample.reference_payload.get("tracking_gt_sampled")
+    if not isinstance(oracle_tracking, list):
+        raise ValueError(f"{sample.sample_id}: missing tracking_gt_sampled for OracleTrack")
+    forced_prediction = dict(structured_prediction)
+    forced_prediction["tracking"] = list(oracle_tracking)
+    return StructuredPredictionRecord(
+        sample_id=structured_record.sample_id,
+        task_name=structured_record.task_name,
+        video_key=structured_record.video_key,
+        protocol_id=structured_record.protocol_id,
+        raw_output=structured_record.raw_output,
+        structured_prediction=forced_prediction,
+        structuring_errors=list(structured_record.structuring_errors),
+        structuring_warnings=list(structured_record.structuring_warnings),
+        structurer_raw_response=structured_record.structurer_raw_response,
+        pair_id=structured_record.pair_id,
+        upstream_sample_id=structured_record.upstream_sample_id,
+        downstream_sample_id=structured_record.downstream_sample_id,
+    )
 
 
 def build_chain_manifest(
@@ -167,72 +208,102 @@ def evaluate_prepared_predictions(
     )
 
 
-def evaluate_oracle_chain(
+def evaluate_oracle_chain_pair(
     adapter: BaseModelAdapter,
     prepared_by_sample_id: dict[str, PreparedSample],
-    chain_pairs: list[ChainPairRecord],
+    pair: ChainPairRecord,
     *,
     prompt_pack: dict[str, PromptTemplate],
     structurer_service: StructurerService,
     judge_client: JudgeClient | None,
-) -> dict[str, dict[str, EvaluationRecord]]:
-    pair_results: dict[str, dict[str, EvaluationRecord]] = {}
-    for pair in chain_pairs:
-        upstream_sample = prepared_by_sample_id[pair.upstream_sample_id]
-        downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
+) -> dict[str, EvaluationRecord]:
+    upstream_sample = prepared_by_sample_id[pair.upstream_sample_id]
+    downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
+
+    try:
         upstream_raw = adapter.predict(
             build_model_input(
                 upstream_sample,
-                render_prompt(prompt_pack, upstream_sample, oracle_track=True),
-                oracle_track=True,
+                render_oracle_upstream_prompt(prompt_pack, upstream_sample),
             )
         )
-        conversation_history = build_chain_history(upstream_sample, upstream_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise OraclePairError(pair.pair_id, "oracle_upstream_prediction", exc) from exc
+
+    try:
+        upstream_structured = structurer_service.structure(upstream_sample, upstream_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise OraclePairError(pair.pair_id, "oracle_upstream_structuring", exc) from exc
+
+    upstream_record = StructuredPredictionRecord(
+        sample_id=upstream_sample.sample_id,
+        task_name=upstream_sample.task_name,
+        video_key=upstream_sample.video_key,
+        protocol_id=upstream_sample.protocol_id,
+        raw_output=upstream_structured.raw_output,
+        structured_prediction=upstream_structured.structured_prediction,
+        structuring_errors=upstream_structured.errors,
+        structuring_warnings=upstream_structured.warnings,
+        structurer_raw_response=upstream_structured.structurer_raw_response,
+        pair_id=pair.pair_id,
+        upstream_sample_id=pair.upstream_sample_id,
+        downstream_sample_id=pair.downstream_sample_id,
+    )
+
+    try:
+        oracle_upstream = evaluate_sample(
+            upstream_sample,
+            _force_oracle_tracking(upstream_sample, upstream_record),
+            judge_client=judge_client,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise OraclePairError(pair.pair_id, "oracle_upstream_evaluation", exc) from exc
+
+    conversation_history = build_chain_history(upstream_sample, upstream_raw)
+    try:
         downstream_raw = adapter.predict(
             build_model_input(
                 downstream_sample,
-                render_prompt(prompt_pack, downstream_sample, oracle_track=True),
-                oracle_track=True,
+                render_prompt(prompt_pack, downstream_sample),
                 conversation_history=conversation_history,
             )
         )
-        upstream_structured = structurer_service.structure(upstream_sample, upstream_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise OraclePairError(pair.pair_id, "oracle_downstream_prediction", exc) from exc
+
+    try:
         downstream_structured = structurer_service.structure(downstream_sample, downstream_raw)
-        pair_results[pair.pair_id] = {
-            "upstream": evaluate_sample(
-                upstream_sample,
-                StructuredPredictionRecord(
-                    sample_id=upstream_sample.sample_id,
-                    task_name=upstream_sample.task_name,
-                    video_key=upstream_sample.video_key,
-                    protocol_id=upstream_sample.protocol_id,
-                    raw_output=upstream_structured.raw_output,
-                    structured_prediction=upstream_structured.structured_prediction,
-                    structuring_errors=upstream_structured.errors,
-                    structuring_warnings=upstream_structured.warnings,
-                    structurer_raw_response=upstream_structured.structurer_raw_response,
-                ),
-                judge_client=judge_client,
-                override_tracking_with_gt=upstream_sample.task_name
-                in {TASK_CONTINUOUS_ACTIONS, TASK_STG},
-            ),
-            "downstream": evaluate_sample(
-                downstream_sample,
-                StructuredPredictionRecord(
-                    sample_id=downstream_sample.sample_id,
-                    task_name=downstream_sample.task_name,
-                    video_key=downstream_sample.video_key,
-                    protocol_id=downstream_sample.protocol_id,
-                    raw_output=downstream_structured.raw_output,
-                    structured_prediction=downstream_structured.structured_prediction,
-                    structuring_errors=downstream_structured.errors,
-                    structuring_warnings=downstream_structured.warnings,
-                    structurer_raw_response=downstream_structured.structurer_raw_response,
-                ),
-                judge_client=judge_client,
-            ),
-        }
-    return pair_results
+    except Exception as exc:  # noqa: BLE001
+        raise OraclePairError(pair.pair_id, "oracle_downstream_structuring", exc) from exc
+
+    downstream_record = StructuredPredictionRecord(
+        sample_id=downstream_sample.sample_id,
+        task_name=downstream_sample.task_name,
+        video_key=downstream_sample.video_key,
+        protocol_id=downstream_sample.protocol_id,
+        raw_output=downstream_structured.raw_output,
+        structured_prediction=downstream_structured.structured_prediction,
+        structuring_errors=downstream_structured.errors,
+        structuring_warnings=downstream_structured.warnings,
+        structurer_raw_response=downstream_structured.structurer_raw_response,
+        pair_id=pair.pair_id,
+        upstream_sample_id=pair.upstream_sample_id,
+        downstream_sample_id=pair.downstream_sample_id,
+    )
+
+    try:
+        oracle_downstream = evaluate_sample(
+            downstream_sample,
+            downstream_record,
+            judge_client=judge_client,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise OraclePairError(pair.pair_id, "oracle_downstream_evaluation", exc) from exc
+
+    return {
+        "upstream": oracle_upstream,
+        "downstream": oracle_downstream,
+    }
 
 
 def summarize_experiment_b(
@@ -246,9 +317,10 @@ def summarize_experiment_b(
     understanding_values: list[int] = []
     reasoning_values: list[int] = []
     chain_values: list[int] = []
+    chain_wo_track_values: list[int] = []
     oracle_understanding_values: list[int] = []
     oracle_reasoning_values: list[int] = []
-    oracle_chain_values: list[int] = []
+    oracle_chain_wo_track_values: list[int] = []
     pending_pairs = 0
     pending_oracle_pairs = 0
 
@@ -270,6 +342,7 @@ def summarize_experiment_b(
         understanding_values.append(understanding_pass)
         reasoning_values.append(reasoning_pass)
         chain_values.append(understanding_pass * reasoning_pass)
+        chain_wo_track_values.append(understanding_non_tracking * reasoning_pass)
 
         if oracle_pair_results is None:
             continue
@@ -279,7 +352,6 @@ def summarize_experiment_b(
             continue
         oracle_upstream = oracle_pair["upstream"]
         oracle_downstream = oracle_pair["downstream"]
-        oracle_tracking_pass = int(oracle_upstream.component_pass.get("tracking_pass", 0))
         if pair.upstream_task_name == TASK_CONTINUOUS_ACTIONS:
             oracle_understanding_non_tracking = int(
                 oracle_upstream.component_pass.get("judge_pass", 0)
@@ -289,10 +361,11 @@ def summarize_experiment_b(
                 oracle_upstream.component_pass.get("tiou_pass", 0)
             )
         oracle_reasoning_pass = int(oracle_downstream.component_pass.get("judge_pass", 0))
-        oracle_understanding = oracle_tracking_pass * oracle_understanding_non_tracking
-        oracle_understanding_values.append(oracle_understanding)
+        oracle_understanding_values.append(oracle_understanding_non_tracking)
         oracle_reasoning_values.append(oracle_reasoning_pass)
-        oracle_chain_values.append(oracle_understanding * oracle_reasoning_pass)
+        oracle_chain_wo_track_values.append(
+            oracle_understanding_non_tracking * oracle_reasoning_pass
+        )
 
     num_scored_pairs = len(understanding_values)
     summary = {
@@ -304,6 +377,9 @@ def summarize_experiment_b(
         ),
         "reasoning_acc": sum(reasoning_values) / num_scored_pairs if num_scored_pairs else None,
         "chain_success": sum(chain_values) / num_scored_pairs if num_scored_pairs else None,
+        "chain_success_wo_track": (
+            sum(chain_wo_track_values) / num_scored_pairs if num_scored_pairs else None
+        ),
     }
     if oracle_pair_results is not None:
         num_scored_oracle_pairs = len(oracle_understanding_values)
@@ -321,8 +397,8 @@ def summarize_experiment_b(
                     if num_scored_oracle_pairs
                     else None
                 ),
-                "chain_success_oracle": (
-                    sum(oracle_chain_values) / num_scored_oracle_pairs
+                "chain_success_wo_track_oracle": (
+                    sum(oracle_chain_wo_track_values) / num_scored_oracle_pairs
                     if num_scored_oracle_pairs
                     else None
                 ),

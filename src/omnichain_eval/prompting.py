@@ -28,7 +28,6 @@ _ALLOWED_INFERENCE_VARIABLES = {
     "num_sampled_frames",
     "sampled_index_range",
     "output_contract",
-    "oracle_track_enabled",
 }
 
 PromptTemplateError = TemplatePackError
@@ -86,8 +85,6 @@ def _sampled_index_range(sample: PreparedSample) -> str:
 def render_prompt(
     prompt_pack: dict[str, PromptTemplate],
     sample: PreparedSample,
-    *,
-    oracle_track: bool = False,
 ) -> RenderedPrompt:
     try:
         template = prompt_pack[sample.task_name]
@@ -102,7 +99,6 @@ def render_prompt(
         "num_sampled_frames": len(sample.sampled_frames_original),
         "sampled_index_range": _sampled_index_range(sample),
         "output_contract": _output_contract(sample.task_name),
-        "oracle_track_enabled": str(oracle_track).lower(),
     }
     prompt_text = render_template_text(template.prompt_template, variables, template.path)
     return RenderedPrompt(
@@ -113,11 +109,41 @@ def render_prompt(
     )
 
 
+def render_oracle_upstream_prompt(
+    prompt_pack: dict[str, PromptTemplate],
+    sample: PreparedSample,
+) -> RenderedPrompt:
+    if sample.task_name not in {TASK_CONTINUOUS_ACTIONS, TASK_STG}:
+        raise PromptTemplateError(
+            f"oracle upstream prompt is only supported for {TASK_CONTINUOUS_ACTIONS} and {TASK_STG}"
+        )
+    rendered = render_prompt(prompt_pack, sample)
+    tracking_gt = sample.reference_payload.get("tracking_gt_sampled")
+    if not isinstance(tracking_gt, list):
+        raise PromptTemplateError(f"{sample.sample_id}: missing tracking_gt_sampled for OracleTrack")
+    note = (
+        "Use the provided GT tracking as reference when answering the current upstream question."
+    )
+    if sample.task_name == TASK_STG:
+        note += " Predict `time_window_sampled` yourself; only tracking is oracle."
+    oracle_block = (
+        "OracleTrack rerun.\n"
+        f"{note}\n"
+        "Here is the GT tracking in sampled-frame coordinates:\n"
+        f"```json\n{json.dumps(tracking_gt, ensure_ascii=False, indent=2)}\n```"
+    )
+    return RenderedPrompt(
+        task_name=rendered.task_name,
+        template_path=rendered.template_path,
+        prompt_text=f"{rendered.prompt_text}\n\n{oracle_block}",
+        variables=rendered.variables,
+    )
+
+
 def build_model_input(
     sample: PreparedSample,
     rendered_prompt: RenderedPrompt,
     *,
-    oracle_track: bool = False,
     conversation_history: list[PromptMessage] | None = None,
 ) -> ModelInput:
     messages: list[PromptMessage] = []
@@ -127,7 +153,6 @@ def build_model_input(
     return ModelInput(
         sample=sample,
         messages=messages,
-        oracle_track=oracle_track,
     )
 
 
