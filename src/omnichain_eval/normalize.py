@@ -34,6 +34,65 @@ def _coerce_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
     return [float(item) for item in value]
 
 
+def _required_object_labels(prepared_sample: PreparedSample, errors: list[str]) -> list[str]:
+    gt_objects = prepared_sample.reference_payload.get("objects")
+    if not isinstance(gt_objects, list):
+        errors.append("reference objects must be a list")
+        return []
+    labels: list[str] = []
+    for index, gt_object in enumerate(gt_objects):
+        if not isinstance(gt_object, dict):
+            errors.append(f"reference objects[{index}] must be an object")
+            continue
+        label = str(gt_object.get("label", "")).strip()
+        if not label:
+            errors.append(f"reference objects[{index}].label must be non-empty")
+            continue
+        labels.append(label)
+    return labels
+
+
+def _coerce_labeled_objects(
+    value: Any,
+    prepared_sample: PreparedSample,
+    errors: list[str],
+) -> list[dict[str, Any]]:
+    required_labels = _required_object_labels(prepared_sample, errors)
+    if not isinstance(value, list):
+        errors.append("objects must be a list")
+        return []
+    predicted_by_label: dict[str, dict[str, Any]] = {}
+    for index, row in enumerate(value):
+        if not isinstance(row, dict):
+            errors.append(f"objects[{index}] must be an object")
+            continue
+        if {"label", "bbox"} - set(row):
+            errors.append(f"objects[{index}] must contain label and bbox")
+            continue
+        label = str(row["label"]).strip()
+        if not label:
+            errors.append(f"objects[{index}].label must be non-empty")
+            continue
+        if label in predicted_by_label:
+            errors.append(f"duplicate object label: {label}")
+            continue
+        bbox = _coerce_box(row["bbox"], f"objects[{index}].bbox", errors)
+        if len(bbox) != 4:
+            continue
+        predicted_by_label[label] = {"label": label, "bbox": bbox}
+
+    required_label_set = set(required_labels)
+    for label in sorted(predicted_by_label):
+        if label not in required_label_set:
+            errors.append(f"unexpected object label: {label}")
+    for label in required_labels:
+        if label not in predicted_by_label:
+            errors.append(f"missing object label: {label}")
+    if errors:
+        return []
+    return [predicted_by_label[label] for label in required_labels]
+
+
 def _coerce_segments(
     value: Any,
     num_sampled_frames: int,
@@ -132,6 +191,7 @@ def validate_structured_prediction(
     structured_prediction: dict[str, Any],
     *,
     structurer_raw_response: str | None = None,
+    oracle_upstream: bool = False,
 ) -> StructuredPredictionResult:
     errors: list[str] = []
     warnings: list[str] = []
@@ -166,8 +226,11 @@ def validate_structured_prediction(
     if task_name == TASK_OBJECTS_SPATIAL:
         validated = {
             "text": _coerce_text_field(structured_prediction, errors),
-            "bbox_a": _coerce_box(structured_prediction.get("bbox_a"), "bbox_a", errors),
-            "bbox_b": _coerce_box(structured_prediction.get("bbox_b"), "bbox_b", errors),
+            "objects": _coerce_labeled_objects(
+                structured_prediction.get("objects"),
+                prepared_sample,
+                errors,
+            ),
         }
         return StructuredPredictionResult(
             task_name=task_name,
@@ -196,6 +259,22 @@ def validate_structured_prediction(
         )
 
     if task_name == TASK_CONTINUOUS_ACTIONS:
+        if oracle_upstream:
+            validated = {
+                "segments": _coerce_segments(
+                    structured_prediction.get("segments"),
+                    num_sampled_frames,
+                    errors,
+                )
+            }
+            return StructuredPredictionResult(
+                task_name=task_name,
+                raw_output=raw_output,
+                structured_prediction=(validated if not errors else None),
+                errors=errors,
+                warnings=warnings,
+                structurer_raw_response=structurer_raw_response,
+            )
         validated = {
             "segments": _coerce_segments(
                 structured_prediction.get("segments"),
@@ -218,6 +297,22 @@ def validate_structured_prediction(
         )
 
     if task_name == TASK_STG:
+        if oracle_upstream:
+            validated = {
+                "time_window_sampled": _coerce_time_window(
+                    structured_prediction.get("time_window_sampled"),
+                    num_sampled_frames,
+                    errors,
+                ),
+            }
+            return StructuredPredictionResult(
+                task_name=task_name,
+                raw_output=raw_output,
+                structured_prediction=(validated if not errors else None),
+                errors=errors,
+                warnings=warnings,
+                structurer_raw_response=structurer_raw_response,
+            )
         validated = {
             "time_window_sampled": _coerce_time_window(
                 structured_prediction.get("time_window_sampled"),

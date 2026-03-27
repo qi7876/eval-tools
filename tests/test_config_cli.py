@@ -22,6 +22,7 @@ model_name = "demo-model"
 adapter = "mock"
 chain_manifest = "../artifacts/chain_pairs.jsonl"
 enable_oracle_track = true
+oracle_prompt_root = "../prompts/benchmark_oracle_v1"
 
 [judge]
 backend = "openai"
@@ -38,6 +39,7 @@ type = "disabled"
 [structurer]
 backend = "openai"
 prompt_root = "../prompts/structurer_v1"
+oracle_prompt_root = "../prompts/structurer_oracle_v1"
 base_url = "http://structurer.example/v1"
 api_key_env = "CUSTOM_STRUCTURER_KEY"
 model = "structurer-model"
@@ -61,6 +63,7 @@ type = "disabled"
     assert config.adapter == "mock"
     assert config.chain_manifest == (tmp_path / "artifacts" / "chain_pairs.jsonl").resolve()
     assert config.enable_oracle_track is True
+    assert config.oracle_prompt_root == (tmp_path / "prompts" / "benchmark_oracle_v1").resolve()
     assert config.judge.backend == "openai"
     assert config.judge.prompt_path == (tmp_path / "prompts" / "judge_v1.md").resolve()
     assert config.judge.base_url == "http://judge.example/v1"
@@ -71,6 +74,7 @@ type = "disabled"
     assert config.judge.concurrency == 2
     assert config.structurer.backend == "openai"
     assert config.structurer.prompt_root == (tmp_path / "prompts" / "structurer_v1").resolve()
+    assert config.structurer.oracle_prompt_root == (tmp_path / "prompts" / "structurer_oracle_v1").resolve()
     assert config.structurer.base_url == "http://structurer.example/v1"
     assert config.structurer.api_key_env == "CUSTOM_STRUCTURER_KEY"
     assert config.structurer.model == "structurer-model"
@@ -122,6 +126,31 @@ prompt_root = "prompts/structurer_v1"
     )
 
     with pytest.raises(ValueError, match=r"\[run_eval\]\.prompt_root is required"):
+        load_run_eval_config(config_path)
+
+
+def test_load_run_eval_config_requires_oracle_prompt_roots_when_enabled(tmp_path):
+    config_path = tmp_path / "invalid.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+prompt_root = "prompts/benchmark_v1"
+adapter = "mock"
+enable_oracle_track = true
+
+[judge]
+prompt_path = "prompts/judge_v1.md"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[run_eval\]\.oracle_prompt_root is required"):
         load_run_eval_config(config_path)
 
 

@@ -7,6 +7,7 @@ run_name = "baseline-expd-window-32s-2fps"
 model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 enable_oracle_track = false
+# oracle_prompt_root = "../../prompts/benchmark_oracle_v1"
 
 [judge]
 backend = "openai"
@@ -23,6 +24,7 @@ type = "disabled"
 [structurer]
 backend = "openai"
 prompt_root = "../../prompts/structurer_v1"
+# oracle_prompt_root = "../../prompts/structurer_oracle_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"

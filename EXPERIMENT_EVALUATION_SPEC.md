@@ -148,8 +148,10 @@ Applicable to:
 ```json
 {
   "text": "...",
-  "bbox_a": [xtl, ytl, xbr, ybr],
-  "bbox_b": [xtl, ytl, xbr, ybr]
+  "objects": [
+    {"label": "Player A", "bbox": [xtl, ytl, xbr, ybr]},
+    {"label": "Player B", "bbox": [xtl, ytl, xbr, ybr]}
+  ]
 }
 ```
 
@@ -783,8 +785,8 @@ Sample passes iff judge text pass is `1`.
 Sample passes iff:
 
 - judge text pass is `1`,
-- `bbox_a` IoU $\ge 0.5$,
-- `bbox_b` IoU $\ge 0.5$.
+- the predicted object with the same `label` as GT object 1 has IoU $\ge 0.5$,
+- the predicted object with the same `label` as GT object 2 has IoU $\ge 0.5$.
 
 Both boxes must individually satisfy the threshold. Averaging the two IoUs is not allowed.
 
@@ -1165,7 +1167,7 @@ The implementation must preserve the following decisions exactly:
 - `Commentary` is reported separately and excluded from main overall average,
 - `Continuous_Actions_Caption`, `Continuous_Events_Caption`, and `Commentary` use LLM judge for joint text-plus-timing evaluation,
 - `Temporal_Causal` passes if the main cause is correct and there is no key hallucination,
-- `Objects_Spatial_Relationships` requires both boxes to satisfy IoU $\ge 0.5$,
+- `Objects_Spatial_Relationships` requires both GT object labels to be present and each matched box to satisfy IoU $\ge 0.5$,
 - tracking uses mean IoU and frame pass rate, both thresholded at $0.5$,
 - STG still evaluates time window separately with tIoU@0.5,
 - OracleTrack is a true rerun with GT tracking substituted,

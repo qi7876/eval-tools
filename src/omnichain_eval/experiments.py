@@ -41,34 +41,6 @@ class OraclePairError(RuntimeError):
         self.cause = cause
 
 
-def _force_oracle_tracking(
-    sample: PreparedSample,
-    structured_record: StructuredPredictionRecord,
-) -> StructuredPredictionRecord:
-    structured_prediction = structured_record.structured_prediction
-    if structured_prediction is None:
-        return structured_record
-    oracle_tracking = sample.reference_payload.get("tracking_gt_sampled")
-    if not isinstance(oracle_tracking, list):
-        raise ValueError(f"{sample.sample_id}: missing tracking_gt_sampled for OracleTrack")
-    forced_prediction = dict(structured_prediction)
-    forced_prediction["tracking"] = list(oracle_tracking)
-    return StructuredPredictionRecord(
-        sample_id=structured_record.sample_id,
-        task_name=structured_record.task_name,
-        video_key=structured_record.video_key,
-        protocol_id=structured_record.protocol_id,
-        raw_output=structured_record.raw_output,
-        structured_prediction=forced_prediction,
-        structuring_errors=list(structured_record.structuring_errors),
-        structuring_warnings=list(structured_record.structuring_warnings),
-        structurer_raw_response=structured_record.structurer_raw_response,
-        pair_id=structured_record.pair_id,
-        upstream_sample_id=structured_record.upstream_sample_id,
-        downstream_sample_id=structured_record.downstream_sample_id,
-    )
-
-
 def build_chain_manifest(
     data_root: Path,
     output_path: Path,
@@ -214,24 +186,30 @@ def evaluate_oracle_chain_pair(
     pair: ChainPairRecord,
     *,
     prompt_pack: dict[str, PromptTemplate],
+    oracle_prompt_pack: dict[str, PromptTemplate],
     structurer_service: StructurerService,
     judge_client: JudgeClient | None,
 ) -> dict[str, EvaluationRecord]:
     upstream_sample = prepared_by_sample_id[pair.upstream_sample_id]
     downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
+    oracle_upstream_prompt = render_oracle_upstream_prompt(oracle_prompt_pack, upstream_sample)
 
     try:
         upstream_raw = adapter.predict(
             build_model_input(
                 upstream_sample,
-                render_oracle_upstream_prompt(prompt_pack, upstream_sample),
+                oracle_upstream_prompt,
             )
         )
     except Exception as exc:  # noqa: BLE001
         raise OraclePairError(pair.pair_id, "oracle_upstream_prediction", exc) from exc
 
     try:
-        upstream_structured = structurer_service.structure(upstream_sample, upstream_raw)
+        upstream_structured = structurer_service.structure(
+            upstream_sample,
+            upstream_raw,
+            oracle_upstream=True,
+        )
     except Exception as exc:  # noqa: BLE001
         raise OraclePairError(pair.pair_id, "oracle_upstream_structuring", exc) from exc
 
@@ -253,13 +231,17 @@ def evaluate_oracle_chain_pair(
     try:
         oracle_upstream = evaluate_sample(
             upstream_sample,
-            _force_oracle_tracking(upstream_sample, upstream_record),
+            upstream_record,
             judge_client=judge_client,
+            oracle_upstream=True,
         )
     except Exception as exc:  # noqa: BLE001
         raise OraclePairError(pair.pair_id, "oracle_upstream_evaluation", exc) from exc
 
-    conversation_history = build_chain_history(upstream_sample, upstream_raw)
+    conversation_history = build_chain_history(
+        oracle_upstream_prompt.prompt_text,
+        upstream_raw,
+    )
     try:
         downstream_raw = adapter.predict(
             build_model_input(

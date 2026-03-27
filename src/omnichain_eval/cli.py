@@ -35,6 +35,7 @@ from .prompting import (
     PromptTemplate,
     build_chain_history,
     build_model_input,
+    load_oracle_prompt_pack,
     load_prompt_pack,
     render_prompt,
 )
@@ -51,6 +52,7 @@ from .structurer import (
     StaticParseStructurerBackend,
     StructurerResponseFormatExhaustedError,
     StructurerService,
+    load_oracle_structurer_prompt_pack,
     load_structurer_prompt_pack,
 )
 from .utils import append_jsonl, ensure_directory, read_json, read_jsonl, write_json, write_jsonl
@@ -100,6 +102,11 @@ def _judge_client_from_config(judge_config: JudgeConfig):
 
 def _structurer_service_from_config(structurer_config: StructurerConfig) -> StructurerService:
     prompt_pack = load_structurer_prompt_pack(structurer_config.prompt_root)
+    oracle_prompt_pack = (
+        load_oracle_structurer_prompt_pack(structurer_config.oracle_prompt_root)
+        if structurer_config.oracle_prompt_root is not None
+        else None
+    )
     if structurer_config.backend == "static-parse":
         backend = StaticParseStructurerBackend()
     else:
@@ -119,6 +126,7 @@ def _structurer_service_from_config(structurer_config: StructurerConfig) -> Stru
     return StructurerService(
         backend=backend,
         prompt_pack=prompt_pack,
+        oracle_prompt_pack=oracle_prompt_pack,
         invalid_json_retries=structurer_config.invalid_json_retries,
     )
 
@@ -321,14 +329,11 @@ def _evaluate_with_judge_client(
     judge_client: Any,
     sample: PreparedSample,
     structured_record: StructuredPredictionRecord,
-    *,
-    override_tracking_with_gt: bool = False,
 ) -> EvaluationRecord:
     return evaluate_sample(
         sample,
         structured_record,
         judge_client=judge_client,
-        override_tracking_with_gt=override_tracking_with_gt,
     )
 
 
@@ -461,6 +466,11 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     prepared_samples = load_prepared_for_protocol(config.prepared_root, config.protocol)
     prepared_by_sample_id = {sample.sample_id: sample for sample in prepared_samples}
     prompt_pack = load_prompt_pack(config.prompt_root)
+    oracle_prompt_pack = (
+        load_oracle_prompt_pack(config.oracle_prompt_root)
+        if config.oracle_prompt_root is not None
+        else None
+    )
     structurer_service = _structurer_service_from_config(config.structurer)
 
     adapter = resolve_adapter(config.adapter)
@@ -780,7 +790,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                             downstream_sample,
                             rendered_prompts_by_sample_id[downstream_sample.sample_id],
                             conversation_history=build_chain_history(
-                                prepared_by_sample_id[pair.upstream_sample_id],
+                                rendered_prompts_by_sample_id[pair.upstream_sample_id].prompt_text,
                                 upstream_raw_output,
                             ),
                         )
@@ -854,6 +864,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                         prepared_by_sample_id,
                         pair,
                         prompt_pack=prompt_pack,
+                        oracle_prompt_pack=oracle_prompt_pack,
                         structurer_service=structurer_service,
                         judge_client=judge_client,
                     )

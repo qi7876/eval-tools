@@ -417,7 +417,7 @@ The adapter is complete when all of the following are true:
 1. `adapter = "module.path:ClassName"` resolves successfully.
 2. `run-eval` can call `predict()` on prepared samples without adapter-side prompt construction.
 3. Normal samples write to `predictions.jsonl` and continue through structuring and judging.
-4. Chain downstream samples write to `chain_predictions.jsonl` and preserve upstream question plus upstream raw answer in history.
+4. Chain downstream samples write to `chain_predictions.jsonl` and preserve upstream rendered prompt plus upstream raw answer in history.
 5. Re-running the same `run_name` resumes from existing artifacts.
 6. The adapter returns only raw model text and leaves structuring/judging to the framework.
 7. No Commentary-specific logic is added. Commentary is intentionally out of scope for this framework.

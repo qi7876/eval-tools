@@ -197,6 +197,30 @@ def _evaluate_tracking(
     )
 
 
+def _evaluate_object_spatial(
+    structured_prediction: dict[str, Any],
+    gt_objects: list[dict[str, Any]],
+) -> tuple[dict[str, Any], dict[str, int]]:
+    predicted_objects = structured_prediction.get("objects", [])
+    predicted_by_label = {
+        str(row["label"]).strip(): [float(value) for value in row["bbox"]]
+        for row in predicted_objects
+        if isinstance(row, dict) and "label" in row and "bbox" in row
+    }
+    object_ious: dict[str, float] = {}
+    object_passes: dict[str, int] = {}
+    for gt_object in gt_objects:
+        label = str(gt_object["label"]).strip()
+        predicted_bbox = predicted_by_label.get(label)
+        if predicted_bbox is None:
+            iou = 0.0
+        else:
+            iou = bbox_iou(predicted_bbox, gt_object["bbox"])
+        object_ious[label] = iou
+        object_passes[label] = int(iou >= BBOX_IOU_THRESHOLD)
+    return {"object_ious": object_ious}, object_passes
+
+
 def _linearize_segments(segments: list[dict[str, Any]]) -> str:
     return " ".join(segment["text"] for segment in segments)
 
@@ -261,7 +285,7 @@ def evaluate_sample(
     structured_record: StructuredPredictionRecord,
     *,
     judge_client: JudgeClient | None,
-    override_tracking_with_gt: bool = False,
+    oracle_upstream: bool = False,
 ) -> EvaluationRecord:
     structured = structured_record.structured_prediction
     metrics: dict[str, Any] = {}
@@ -287,22 +311,12 @@ def evaluate_sample(
         component_pass["judge_pass"] = judge_pass
         task_pass = int(component_pass["bbox_pass"] and judge_pass)
     elif prepared_sample.task_name == TASK_OBJECTS_SPATIAL:
-        if structured and len(structured.get("bbox_a", [])) == 4 and len(structured.get("bbox_b", [])) == 4:
-            bbox_a_iou = bbox_iou(
-                structured["bbox_a"],
-                prepared_sample.reference_payload["bbox_a"],
-            )
-            bbox_b_iou = bbox_iou(
-                structured["bbox_b"],
-                prepared_sample.reference_payload["bbox_b"],
-            )
-        else:
-            bbox_a_iou = 0.0
-            bbox_b_iou = 0.0
-        metrics["bbox_a_iou"] = bbox_a_iou
-        metrics["bbox_b_iou"] = bbox_b_iou
-        component_pass["bbox_a_pass"] = int(bbox_a_iou >= BBOX_IOU_THRESHOLD)
-        component_pass["bbox_b_pass"] = int(bbox_b_iou >= BBOX_IOU_THRESHOLD)
+        object_metrics, object_passes = _evaluate_object_spatial(
+            structured or {},
+            prepared_sample.reference_payload["objects"],
+        )
+        metrics.update(object_metrics)
+        component_pass["object_passes"] = object_passes
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
@@ -310,9 +324,7 @@ def evaluate_sample(
             judge_client,
         )
         component_pass["judge_pass"] = judge_pass
-        task_pass = int(
-            judge_pass and component_pass["bbox_a_pass"] and component_pass["bbox_b_pass"]
-        )
+        task_pass = int(judge_pass and all(object_passes.values()))
     elif prepared_sample.task_name in TEXT_ONLY_TASKS:
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
@@ -339,11 +351,6 @@ def evaluate_sample(
         component_pass["judge_pass"] = judge_pass
         task_pass = judge_pass
     elif prepared_sample.task_name == TASK_CONTINUOUS_ACTIONS:
-        if structured is not None and override_tracking_with_gt:
-            structured = dict(structured)
-            structured["tracking"] = list(
-                prepared_sample.reference_payload.get("tracking_gt_sampled", [])
-            )
         if structured is not None:
             predicted_segments_original, segment_errors = _map_segments_to_original(
                 structured,
@@ -358,20 +365,18 @@ def evaluate_sample(
             predicted_segments_original=predicted_segments_original,
         )
         component_pass["judge_pass"] = judge_pass
-        tracking_metrics, tracking_pass, tracking_warnings = _evaluate_tracking(
-            structured or {},
-            prepared_sample.reference_payload.get("tracking_gt_sampled", []),
-        )
-        metrics.update(tracking_metrics)
-        component_pass.update(tracking_pass)
-        warnings.extend(tracking_warnings)
-        task_pass = int(judge_pass and component_pass["tracking_pass"])
-    elif prepared_sample.task_name == TASK_STG:
-        if structured is not None and override_tracking_with_gt:
-            structured = dict(structured)
-            structured["tracking"] = list(
-                prepared_sample.reference_payload.get("tracking_gt_sampled", [])
+        if oracle_upstream:
+            task_pass = judge_pass
+        else:
+            tracking_metrics, tracking_pass, tracking_warnings = _evaluate_tracking(
+                structured or {},
+                prepared_sample.reference_payload.get("tracking_gt_sampled", []),
             )
+            metrics.update(tracking_metrics)
+            component_pass.update(tracking_pass)
+            warnings.extend(tracking_warnings)
+            task_pass = int(judge_pass and component_pass["tracking_pass"])
+    elif prepared_sample.task_name == TASK_STG:
         predicted_original_window = None
         if structured is not None:
             predicted_original_window, window_errors = _map_window_to_original(
@@ -388,14 +393,17 @@ def evaluate_sample(
             )
         metrics["tiou"] = tiou
         component_pass["tiou_pass"] = int(tiou >= TIOU_THRESHOLD)
-        tracking_metrics, tracking_pass, tracking_warnings = _evaluate_tracking(
-            structured or {},
-            prepared_sample.reference_payload.get("tracking_gt_sampled", []),
-        )
-        metrics.update(tracking_metrics)
-        component_pass.update(tracking_pass)
-        warnings.extend(tracking_warnings)
-        task_pass = int(component_pass["tiou_pass"] and component_pass["tracking_pass"])
+        if oracle_upstream:
+            task_pass = int(component_pass["tiou_pass"])
+        else:
+            tracking_metrics, tracking_pass, tracking_warnings = _evaluate_tracking(
+                structured or {},
+                prepared_sample.reference_payload.get("tracking_gt_sampled", []),
+            )
+            metrics.update(tracking_metrics)
+            component_pass.update(tracking_pass)
+            warnings.extend(tracking_warnings)
+            task_pass = int(component_pass["tiou_pass"] and component_pass["tracking_pass"])
     else:
         raise ValueError(f"unsupported task for evaluation: {prepared_sample.task_name}")
 
@@ -455,8 +463,15 @@ def summarize_task_records(
         float(value)
         for record in records
         for key, value in record.component_pass.items()
-        if key in {"bbox_pass", "bbox_a_pass", "bbox_b_pass"}
+        if key == "bbox_pass"
     ]
+    bbox_passes.extend(
+        float(value)
+        for record in records
+        for key, value in record.component_pass.items()
+        if key == "object_passes" and isinstance(value, dict)
+        for value in value.values()
+    )
     tiou_passes = [
         float(record.component_pass["tiou_pass"])
         for record in records

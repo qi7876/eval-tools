@@ -504,7 +504,13 @@ Canonical expectations by task:
 - `Objects_Spatial_Relationships`:
 
 ```json
-{"text": "...", "bbox_a": [xtl, ytl, xbr, ybr], "bbox_b": [xtl, ytl, xbr, ybr]}
+{
+  "text": "...",
+  "objects": [
+    {"label": "Player A", "bbox": [xtl, ytl, xbr, ybr]},
+    {"label": "Player B", "bbox": [xtl, ytl, xbr, ybr]}
+  ]
+}
 ```
 
 - `Continuous_Events_Caption`:
@@ -871,9 +877,11 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 What the framework does:
 
 - reruns the upstream and downstream pair through the adapter
-- injects GT tracking into the upstream rerun prompt
-- rebuilds downstream chain history from the upstream question plus upstream raw answer
-- replaces tracking with GT during upstream oracle scoring
+- uses `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` as dedicated OracleTrack prompt packs
+- injects GT tracking directly into the upstream Oracle prompt body, while keeping the prompt otherwise close to the normal template
+- tells the model that the subject has already been identified by GT tracking, so the Oracle upstream output should omit tracking boxes
+- rebuilds downstream chain history from the full rendered upstream prompt plus the upstream raw answer
+- scores Oracle upstream samples only on the non-tracking component, then reports Oracle text-only chain metrics in Experiment B
 
 ## BERTScore
 

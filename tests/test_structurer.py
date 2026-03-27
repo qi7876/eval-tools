@@ -9,18 +9,21 @@ from omnichain_eval.structurer import (
     StructurerBackend,
     StructurerResponseFormatExhaustedError,
     StructurerService,
+    load_oracle_structurer_prompt_pack,
     load_structurer_prompt_pack,
     render_structurer_prompt,
 )
 from omnichain_eval.template_pack import TaskTemplate
 
 PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
+ORACLE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_oracle_v1"
 
 
 def _sample(
     *,
     task_name: str = "Scoreboard_Multiple",
     question_text: str = "Who is leading?",
+    reference_payload: dict | None = None,
 ) -> PreparedSample:
     return PreparedSample(
         sample_id="video/sample#1",
@@ -35,7 +38,7 @@ def _sample(
         frame_files=["frames/0000.jpg", "frames/0001.jpg", "frames/0002.jpg"],
         source_video_path="video.mp4",
         source_annotation_path="anno.json",
-        reference_payload={"text": "Team A is leading."},
+        reference_payload=reference_payload or {"text": "Team A is leading."},
     )
 
 
@@ -58,6 +61,11 @@ class SequenceBackend(StructurerBackend):
         response = self.responses[self.calls]
         self.calls += 1
         return [response]
+
+
+class StaticParseBackend(StructurerBackend):
+    def complete(self, *, sample, raw_output, rendered_prompt):
+        return [raw_output]
 
 
 def test_structurer_retries_invalid_json_before_accepting_valid_response():
@@ -163,6 +171,138 @@ def test_rendered_structurer_prompt_for_text_task_uses_question_only_for_alignme
     assert "Use the question only to understand what field the task expects." in rendered.prompt_text
     assert "Do not copy answer content from the question into the prediction." in rendered.prompt_text
     assert "prefer the last one presented as the final answer." in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_objects_spatial_includes_label_rules():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Objects_Spatial_Relationships",
+            question_text="What is the spatial relationship between Player A and Player B?",
+            reference_payload={
+                "text": "Player A is to the right of Player B.",
+                "objects": [
+                    {"label": "Player A", "bbox": [10, 20, 30, 40]},
+                    {"label": "Player B", "bbox": [50, 60, 70, 80]},
+                ],
+            },
+        ),
+        'Final answer: {"text": "right of", "objects": [{"label": "Player B", "bbox": [1,2,3,4]}]}',
+    )
+
+    assert "Use exactly these object labels" in rendered.prompt_text
+    assert '["Player A", "Player B"]' in rendered.prompt_text
+    assert "Match boxes by explicit label, not by first/second position." in rendered.prompt_text
+
+
+def test_normal_structurer_for_actions_requires_tracking():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    with pytest.raises(
+        StructurerResponseFormatExhaustedError,
+        match="tracking must be a list after 1 attempt\\(s\\)",
+    ):
+        service.structure(
+            _sample(
+                task_name="Continuous_Actions_Caption",
+                question_text="Describe the athlete actions over time.",
+            ),
+            '{"segments": [{"start_sampled": 0, "end_sampled": 1, "text": "runs"}]}',
+        )
+
+
+def test_normal_structurer_for_stg_requires_tracking():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    with pytest.raises(
+        StructurerResponseFormatExhaustedError,
+        match="tracking must be a list after 1 attempt\\(s\\)",
+    ):
+        service.structure(
+            _sample(
+                task_name="Spatial_Temporal_Grounding",
+                question_text="Ground the action.",
+            ),
+            '{"time_window_sampled": [0, 1]}',
+        )
+
+
+def test_oracle_structurer_for_actions_accepts_segments_only():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        oracle_prompt_pack=load_oracle_structurer_prompt_pack(ORACLE_PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    result = service.structure(
+        _sample(
+            task_name="Continuous_Actions_Caption",
+            question_text="Describe the athlete actions over time.",
+        ),
+        '{"segments": [{"start_sampled": 0, "end_sampled": 1, "text": "runs"}]}',
+        oracle_upstream=True,
+    )
+
+    assert result.structured_prediction == {
+        "segments": [{"start_sampled": 0, "end_sampled": 1, "text": "runs"}]
+    }
+
+
+def test_oracle_structurer_for_stg_accepts_time_window_only():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        oracle_prompt_pack=load_oracle_structurer_prompt_pack(ORACLE_PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    result = service.structure(
+        _sample(
+            task_name="Spatial_Temporal_Grounding",
+            question_text="Ground the action.",
+        ),
+        '{"time_window_sampled": [0, 1]}',
+        oracle_upstream=True,
+    )
+
+    assert result.structured_prediction == {"time_window_sampled": [0, 1]}
+
+
+def test_structurer_rejects_legacy_object_spatial_bbox_a_bbox_b_schema():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    with pytest.raises(
+        StructurerResponseFormatExhaustedError,
+        match="objects must be a list after 1 attempt\\(s\\)",
+    ):
+        service.structure(
+            _sample(
+                task_name="Objects_Spatial_Relationships",
+                question_text="What is the spatial relationship between Player A and Player B?",
+                reference_payload={
+                    "text": "Player A is to the right of Player B.",
+                    "objects": [
+                        {"label": "Player A", "bbox": [10, 20, 30, 40]},
+                        {"label": "Player B", "bbox": [50, 60, 70, 80]},
+                    ],
+                },
+            ),
+            '{"text": "right of", "bbox_a": [10, 20, 30, 40], "bbox_b": [50, 60, 70, 80]}',
+        )
 
 
 def test_openai_structurer_forwards_extra_body(monkeypatch):

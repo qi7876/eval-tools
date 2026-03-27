@@ -555,8 +555,10 @@ adapter 应直接返回模型的原始回答字符串。
 ```json
 {
   "text": "...",
-  "bbox_a": [xtl, ytl, xbr, ybr],
-  "bbox_b": [xtl, ytl, xbr, ybr]
+  "objects": [
+    {"label": "Player A", "bbox": [xtl, ytl, xbr, ybr]},
+    {"label": "Player B", "bbox": [xtl, ytl, xbr, ybr]}
+  ]
 }
 ```
 
@@ -922,9 +924,11 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 此时框架会：
 
 - 对 chain pair 做 rerun
-- 在 upstream rerun prompt 中直接注入 GT tracking
-- 下游输入会重新基于“上游问题 + 上游原始回答”构建链式历史
-- 在上游 oracle 评分时用 GT tracking 替换 tracking 分量
+- 使用 `[run_eval].oracle_prompt_root` 和 `[structurer].oracle_prompt_root` 这两套专门的 OracleTrack prompt
+- 在 upstream Oracle prompt 正文中直接注入 GT tracking，但整体 prompt 仍尽量保持和普通模板一致
+- 明确告诉模型主体已经由 GT tracking 指定，因此 Oracle upstream 输出不需要再生成 tracking
+- 下游输入会重新基于“上游完整渲染 prompt + 上游原始回答”构建链式历史
+- Oracle upstream 评分只看非 tracking 分量，Experiment B 中额外汇总 Oracle 的 text-only chain 指标
 
 ## BERTScore
 

@@ -94,11 +94,22 @@ def load_tracking_rows(path: Path | None) -> list[dict[str, Any]]:
 def _normalize_objects_boxes(raw_boxes: list[dict[str, Any]]) -> dict[str, Any]:
     if len(raw_boxes) != 2:
         raise ValueError("Objects_Spatial_Relationships expects exactly two boxes")
+    objects: list[dict[str, Any]] = []
+    for index, raw_box in enumerate(raw_boxes):
+        label = str(raw_box.get("label", "")).strip()
+        if not label:
+            raise ValueError(
+                f"Objects_Spatial_Relationships box {index} is missing a non-empty label"
+            )
+        objects.append(
+            {
+                "label": label,
+                "bbox": [float(value) for value in raw_box["box"]],
+            }
+        )
     return {
         "text": "",
-        "bbox_a": [float(value) for value in raw_boxes[0]["box"]],
-        "bbox_b": [float(value) for value in raw_boxes[1]["box"]],
-        "labels": [raw_boxes[0].get("label"), raw_boxes[1].get("label")],
+        "objects": objects,
     }
 
 

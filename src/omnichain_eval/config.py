@@ -92,6 +92,7 @@ class StructurerConfig:
     invalid_json_retries: int = 0
     concurrency: int = 1
     prompt_root: Path | None = None
+    oracle_prompt_root: Path | None = None
 
     def resolved_base_url(self) -> str | None:
         if self.base_url:
@@ -110,6 +111,7 @@ class RunEvalConfig:
     protocol: str = "main"
     artifacts_root: Path = Path("artifacts/runs")
     prompt_root: Path | None = None
+    oracle_prompt_root: Path | None = None
     run_name: str | None = None
     model_name: str | None = None
     chain_manifest: Path | None = None
@@ -199,6 +201,7 @@ def _load_structurer_config(base_dir: Path, payload: dict[str, Any]) -> Structur
         invalid_json_retries=int(table.get("invalid_json_retries", 0)),
         concurrency=int(table.get("concurrency", 1)),
         prompt_root=_resolve_path(base_dir, table.get("prompt_root")),
+        oracle_prompt_root=_resolve_path(base_dir, table.get("oracle_prompt_root")),
     )
     if config.backend not in {"openai", "static-parse"}:
         raise ValueError("[structurer].backend must be one of: openai, static-parse")
@@ -227,6 +230,7 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
             default="artifacts/runs",
         ),  # type: ignore[arg-type]
         prompt_root=_resolve_path(base_dir, table.get("prompt_root")),
+        oracle_prompt_root=_resolve_path(base_dir, table.get("oracle_prompt_root")),
         run_name=table.get("run_name"),
         model_name=table.get("model_name"),
         chain_manifest=_resolve_path(base_dir, table.get("chain_manifest")),
@@ -239,4 +243,10 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
         raise ValueError("[run_eval].adapter is required")
     if config.prompt_root is None:
         raise ValueError("[run_eval].prompt_root is required")
+    if config.enable_oracle_track and config.oracle_prompt_root is None:
+        raise ValueError("[run_eval].oracle_prompt_root is required when enable_oracle_track = true")
+    if config.enable_oracle_track and config.structurer.oracle_prompt_root is None:
+        raise ValueError(
+            "[structurer].oracle_prompt_root is required when enable_oracle_track = true"
+        )
     return config

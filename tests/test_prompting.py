@@ -65,8 +65,9 @@ def test_rendered_spatial_imagination_model_input_includes_history(monkeypatch, 
 
     upstream_sample = next(sample for sample in prepared_samples if sample.sample_id == "TestSport/TestEvent/1#2")
     downstream_sample = next(sample for sample in prepared_samples if sample.sample_id == "TestSport/TestEvent/1#4")
+    rendered_upstream_prompt = render_prompt(prompt_pack, upstream_sample)
     conversation_history = build_chain_history(
-        upstream_sample,
+        rendered_upstream_prompt.prompt_text,
         {"text": "mock upstream answer"},
     )
     model_input = build_model_input(
@@ -76,5 +77,5 @@ def test_rendered_spatial_imagination_model_input_includes_history(monkeypatch, 
     )
 
     assert [message.role for message in model_input.messages] == ["user", "assistant", "user"]
-    assert model_input.messages[0].content == upstream_sample.question_text
+    assert model_input.messages[0].content == rendered_upstream_prompt.prompt_text
     assert model_input.messages[1].content == '{"text": "mock upstream answer"}'

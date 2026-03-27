@@ -34,7 +34,10 @@ _ALLOWED_STRUCTURER_VARIABLES = {
     "num_sampled_frames",
     "sampled_index_range",
     "output_schema",
+    "required_object_labels_json",
 }
+
+_ORACLE_UPSTREAM_TASKS = [TASK_CONTINUOUS_ACTIONS, TASK_STG]
 
 StructurerPromptTemplateError = TemplatePackError
 StructurerPromptTemplate = TaskTemplate
@@ -147,13 +150,43 @@ def load_structurer_prompt_pack(prompt_root) -> dict[str, StructurerPromptTempla
     )
 
 
+def load_oracle_structurer_prompt_pack(prompt_root) -> dict[str, StructurerPromptTemplate]:
+    return load_task_template_pack(
+        prompt_root,
+        allowed_variables=_ALLOWED_STRUCTURER_VARIABLES,
+        task_names=_ORACLE_UPSTREAM_TASKS,
+    )
+
+
 def _sampled_index_range(sample: PreparedSample) -> str:
     if not sample.sampled_frames_original:
         raise StructurerPromptTemplateError(f"{sample.sample_id}: no sampled frames available")
     return f"0..{len(sample.sampled_frames_original) - 1}"
 
 
-def _output_schema(task_name: str) -> str:
+def _required_object_labels_json(sample: PreparedSample) -> str:
+    if sample.task_name != TASK_OBJECTS_SPATIAL:
+        return "[]"
+    objects = sample.reference_payload.get("objects")
+    if not isinstance(objects, list):
+        raise StructurerPromptTemplateError(
+            f"{sample.sample_id}: missing objects in reference_payload"
+        )
+    labels = [str(obj["label"]).strip() for obj in objects]
+    if any(not label for label in labels):
+        raise StructurerPromptTemplateError(f"{sample.sample_id}: object labels must be non-empty")
+    return json.dumps(labels, ensure_ascii=False)
+
+
+def _output_schema(task_name: str, *, oracle_upstream: bool = False) -> str:
+    if oracle_upstream:
+        if task_name == TASK_CONTINUOUS_ACTIONS:
+            return json.dumps({"segments": []}, ensure_ascii=False, indent=2)
+        if task_name == TASK_STG:
+            return json.dumps({"time_window_sampled": []}, ensure_ascii=False, indent=2)
+        raise StructurerPromptTemplateError(
+            f"oracle upstream structurer schema is unsupported for {task_name}"
+        )
     if task_name in {
         TASK_SCOREBOARD_MULTIPLE,
         TASK_SPATIAL_IMAGINATION,
@@ -165,7 +198,11 @@ def _output_schema(task_name: str) -> str:
     if task_name == TASK_SCOREBOARD_SINGLE:
         return json.dumps({"text": "", "bbox": []}, ensure_ascii=False, indent=2)
     if task_name == TASK_OBJECTS_SPATIAL:
-        return json.dumps({"text": "", "bbox_a": [], "bbox_b": []}, ensure_ascii=False, indent=2)
+        return json.dumps(
+            {"text": "", "objects": [{"label": "", "bbox": []}]},
+            ensure_ascii=False,
+            indent=2,
+        )
     if task_name == TASK_CONTINUOUS_EVENTS:
         return json.dumps({"segments": []}, ensure_ascii=False, indent=2)
     if task_name == TASK_CONTINUOUS_ACTIONS:
@@ -179,6 +216,8 @@ def render_structurer_prompt(
     prompt_pack: dict[str, StructurerPromptTemplate],
     sample: PreparedSample,
     raw_output: str,
+    *,
+    oracle_upstream: bool = False,
 ) -> RenderedStructurerPrompt:
     try:
         template = prompt_pack[sample.task_name]
@@ -192,7 +231,8 @@ def render_structurer_prompt(
         "raw_output": raw_output,
         "num_sampled_frames": len(sample.sampled_frames_original),
         "sampled_index_range": _sampled_index_range(sample),
-        "output_schema": _output_schema(sample.task_name),
+        "output_schema": _output_schema(sample.task_name, oracle_upstream=oracle_upstream),
+        "required_object_labels_json": _required_object_labels_json(sample),
     }
     prompt_text = render_template_text(template.prompt_template, variables, template.path)
     return RenderedStructurerPrompt(
@@ -207,6 +247,7 @@ def render_structurer_prompt(
 class StructurerService:
     backend: StructurerBackend
     prompt_pack: dict[str, StructurerPromptTemplate]
+    oracle_prompt_pack: dict[str, StructurerPromptTemplate] | None = None
     invalid_json_retries: int = 0
 
     def _parse_payload(self, raw_response: str) -> dict[str, Any]:
@@ -228,8 +269,18 @@ class StructurerService:
         self,
         sample: PreparedSample,
         raw_output: str,
+        *,
+        oracle_upstream: bool = False,
     ) -> StructuredPredictionResult:
-        rendered_prompt = render_structurer_prompt(self.prompt_pack, sample, raw_output)
+        prompt_pack = self.oracle_prompt_pack if oracle_upstream else self.prompt_pack
+        if prompt_pack is None:
+            raise StructurerPromptTemplateError("oracle_prompt_pack is required for OracleTrack structuring")
+        rendered_prompt = render_structurer_prompt(
+            prompt_pack,
+            sample,
+            raw_output,
+            oracle_upstream=oracle_upstream,
+        )
         max_attempts = self.invalid_json_retries + 1
         last_raw_response: str | None = None
         last_error_reason = "structurer response format was invalid"
@@ -250,6 +301,7 @@ class StructurerService:
                     raw_output,
                     payload,
                     structurer_raw_response=raw_response,
+                    oracle_upstream=oracle_upstream,
                 )
                 if validation.errors:
                     last_error_reason = "; ".join(validation.errors)

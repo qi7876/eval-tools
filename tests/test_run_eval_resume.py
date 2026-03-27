@@ -6,7 +6,6 @@ from PIL import Image
 from omnichain_eval.adapters.base import BaseModelAdapter, MockAdapter
 from omnichain_eval.cli import main
 from omnichain_eval.experiments import (
-    _force_oracle_tracking,
     build_chain_manifest,
     evaluate_oracle_chain_pair,
     load_chain_pairs,
@@ -14,11 +13,18 @@ from omnichain_eval.experiments import (
 from omnichain_eval.judge import JudgeClient, JudgeResponseFormatExhaustedError, StaticJudgeClient
 from omnichain_eval.metrics import evaluate_sample
 from omnichain_eval.prepare import build_prepared_data, load_prepared_samples
-from omnichain_eval.prompting import build_model_input, load_prompt_pack, render_prompt
-from omnichain_eval.schema import ModelInput, PreparedSample, StructuredPredictionRecord
+from omnichain_eval.prompting import (
+    build_model_input,
+    load_oracle_prompt_pack,
+    load_prompt_pack,
+    render_oracle_upstream_prompt,
+    render_prompt,
+)
+from omnichain_eval.schema import ModelInput, StructuredPredictionRecord
 from omnichain_eval.structurer import (
     StaticParseStructurerBackend,
     StructurerService,
+    load_oracle_structurer_prompt_pack,
     load_structurer_prompt_pack,
 )
 from omnichain_eval.utils import write_jsonl
@@ -26,7 +32,9 @@ from omnichain_eval.utils import write_jsonl
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mini_data"
 PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_v1"
+ORACLE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_oracle_v1"
 STRUCTURER_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
+ORACLE_STRUCTURER_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_oracle_v1"
 JUDGE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1.md"
 
 
@@ -110,7 +118,6 @@ class OracleTrackingDroppingAdapter(BaseModelAdapter):
             return json.dumps(
                 {
                     "segments": sample.reference_payload["segments_sampled"],
-                    "tracking": [],
                 }
             )
         if sample.task_name == "Spatial_Imagination":
@@ -140,6 +147,7 @@ run_name = "{run_name}"
 adapter = "mock"
 {chain_manifest_line}
 {oracle_track_line}
+oracle_prompt_root = "{ORACLE_PROMPT_ROOT}"
 
 [judge]
 backend = "static-pass"
@@ -150,6 +158,7 @@ concurrency = 1
 [structurer]
 backend = "static-parse"
 prompt_root = "{STRUCTURER_PROMPT_ROOT}"
+oracle_prompt_root = "{ORACLE_STRUCTURER_PROMPT_ROOT}"
 invalid_json_retries = {structurer_invalid_json_retries}
 concurrency = 1
 """.strip()
@@ -407,15 +416,19 @@ def test_run_eval_splits_chain_outputs_and_passes_history_messages(monkeypatch, 
     assert len(downstream_inputs) == 1
     model_input = downstream_inputs[0]
     messages = model_input.messages_as_dicts()
-    upstream_sample = next(
-        sample
-        for sample in load_prepared_samples(prepared_root, "main")
-        if sample.sample_id == "TestSport/TestEvent/1#2"
-    )
+    prepared_by_sample_id = {
+        sample.sample_id: sample for sample in load_prepared_samples(prepared_root, "main")
+    }
+    prompt_pack = load_prompt_pack(PROMPT_ROOT)
+    upstream_sample = prepared_by_sample_id["TestSport/TestEvent/1#2"]
+    downstream_sample = prepared_by_sample_id[downstream_sample_id]
+    rendered_upstream_prompt = render_prompt(prompt_pack, upstream_sample)
+    rendered_downstream_prompt = render_prompt(prompt_pack, downstream_sample)
     expected_upstream_output = MockAdapter().predict(build_test_model_input(upstream_sample))
     assert [message["role"] for message in messages] == ["user", "assistant", "user"]
-    assert messages[0]["content"] == "Describe the athlete actions."
+    assert messages[0]["content"] == rendered_upstream_prompt.prompt_text
     assert messages[1]["content"] == expected_upstream_output
+    assert messages[2]["content"] == rendered_downstream_prompt.prompt_text
 
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["data_status"]["ignored_unsupported_sample_count"] == 0
@@ -455,44 +468,7 @@ def test_run_eval_requires_chain_manifest_for_spatial_imagination(monkeypatch, t
         raise AssertionError("expected run-eval to fail without chain_manifest")
 
 
-def test_force_oracle_tracking_keeps_non_tracking_fields():
-    sample = PreparedSample(
-        sample_id="sample",
-        annotation_id="1",
-        video_key="video",
-        task_name="Spatial_Temporal_Grounding",
-        task_level="L2",
-        protocol_id="main",
-        question_text="Locate the action.",
-        sampled_frames_original=[0, 1, 2],
-        sampled_to_original={0: 0, 1: 1, 2: 2},
-        frame_files=[],
-        source_video_path="video.mp4",
-        source_annotation_path="anno.json",
-        reference_payload={
-            "time_window_original": [0, 2],
-            "tracking_gt_sampled": [{"frame_sampled": 1, "bbox_mot": [1, 2, 3, 4]}],
-        },
-    )
-    record = StructuredPredictionRecord(
-        sample_id="sample",
-        task_name="Spatial_Temporal_Grounding",
-        video_key="video",
-        protocol_id="main",
-        raw_output='{"time_window_sampled":[1,2],"tracking":[]}',
-        structured_prediction={
-            "time_window_sampled": [1, 2],
-            "tracking": [],
-        },
-        structuring_errors=[],
-        structuring_warnings=[],
-    )
-    forced = _force_oracle_tracking(sample, record)
-    assert forced.structured_prediction["time_window_sampled"] == [1, 2]
-    assert forced.structured_prediction["tracking"] == sample.reference_payload["tracking_gt_sampled"]
-
-
-def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_overrides_tracking_for_scoring(
+def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_reuses_rendered_history(
     monkeypatch,
     tmp_path,
 ):
@@ -514,35 +490,44 @@ def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_overrides_tracking_f
     structurer_service = StructurerService(
         backend=StaticParseStructurerBackend(),
         prompt_pack=load_structurer_prompt_pack(STRUCTURER_PROMPT_ROOT),
+        oracle_prompt_pack=load_oracle_structurer_prompt_pack(ORACLE_STRUCTURER_PROMPT_ROOT),
         invalid_json_retries=0,
     )
+    prompt_pack = load_prompt_pack(PROMPT_ROOT)
+    oracle_prompt_pack = load_oracle_prompt_pack(ORACLE_PROMPT_ROOT)
+    oracle_upstream_prompt = render_oracle_upstream_prompt(
+        oracle_prompt_pack,
+        prepared_by_sample_id[pair.upstream_sample_id],
+    )
+    downstream_prompt = render_prompt(prompt_pack, prepared_by_sample_id[pair.downstream_sample_id])
 
     pair_result = evaluate_oracle_chain_pair(
         adapter,
         prepared_by_sample_id,
         pair,
-        prompt_pack=load_prompt_pack(PROMPT_ROOT),
+        prompt_pack=prompt_pack,
+        oracle_prompt_pack=oracle_prompt_pack,
         structurer_service=structurer_service,
         judge_client=StaticJudgeClient(always_pass=True),
     )
 
     upstream_messages = adapter.inputs[0].messages_as_dicts()
     assert [message["role"] for message in upstream_messages] == ["user"]
-    assert "OracleTrack rerun." in upstream_messages[0]["content"]
-    assert '"tracking_gt_sampled"' not in upstream_messages[0]["content"]
+    assert upstream_messages[0]["content"] == oracle_upstream_prompt.prompt_text
+    assert "OracleTrack input for the target athlete referred to in the question:" in upstream_messages[0]["content"]
     assert '"bbox_mot"' in upstream_messages[0]["content"]
     assert pair_result["upstream"].raw_output == json.dumps(
         {
             "segments": prepared_by_sample_id[pair.upstream_sample_id].reference_payload["segments_sampled"],
-            "tracking": [],
         }
     )
-    assert pair_result["upstream"].component_pass["tracking_pass"] == 1
+    assert pair_result["upstream"].component_pass == {"judge_pass": 1}
 
     downstream_messages = adapter.inputs[1].messages_as_dicts()
     assert [message["role"] for message in downstream_messages] == ["user", "assistant", "user"]
-    assert downstream_messages[0]["content"] == prepared_by_sample_id[pair.upstream_sample_id].question_text
+    assert downstream_messages[0]["content"] == oracle_upstream_prompt.prompt_text
     assert downstream_messages[1]["content"] == pair_result["upstream"].raw_output
+    assert downstream_messages[2]["content"] == downstream_prompt.prompt_text
 
 
 def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path):
@@ -581,7 +566,15 @@ def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path)
     assert len(adapter.inputs["TestSport/TestEvent/1#2"]) == 2
     assert len(adapter.inputs["TestSport/TestEvent/1#4"]) == 2
     oracle_upstream_messages = adapter.inputs["TestSport/TestEvent/1#2"][1].messages_as_dicts()
-    assert "OracleTrack rerun." in oracle_upstream_messages[0]["content"]
+    oracle_prompt_pack = load_oracle_prompt_pack(ORACLE_PROMPT_ROOT)
+    prepared_by_sample_id = {
+        sample.sample_id: sample for sample in load_prepared_samples(prepared_root, "main")
+    }
+    oracle_upstream_prompt = render_oracle_upstream_prompt(
+        oracle_prompt_pack,
+        prepared_by_sample_id["TestSport/TestEvent/1#2"],
+    )
+    assert oracle_upstream_messages[0]["content"] == oracle_upstream_prompt.prompt_text
     first_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     experiment_b = first_summary["experiment_b"]
     assert "chain_success" in experiment_b

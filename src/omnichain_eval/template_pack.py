@@ -57,6 +57,7 @@ def load_task_template_pack(
     prompt_root: Path,
     *,
     allowed_variables: set[str],
+    task_names: list[str] | None = None,
 ) -> dict[str, TaskTemplate]:
     if not prompt_root.exists():
         raise TemplatePackError(f"prompt_root does not exist: {prompt_root}")
@@ -64,7 +65,8 @@ def load_task_template_pack(
         raise TemplatePackError(f"prompt_root is not a directory: {prompt_root}")
 
     prompt_pack: dict[str, TaskTemplate] = {}
-    for task_name in sorted(ALL_TASKS):
+    expected_task_names = sorted(task_names or ALL_TASKS)
+    for task_name in expected_task_names:
         path = prompt_root / f"{task_name}.md"
         if not path.exists():
             raise TemplatePackError(f"missing prompt template: {path}")

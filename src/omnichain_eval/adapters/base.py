@@ -49,8 +49,7 @@ class MockAdapter(BaseModelAdapter):
         elif sample.task_name == TASK_OBJECTS_SPATIAL:
             payload = {
                 "text": reference["text"],
-                "bbox_a": reference["bbox_a"],
-                "bbox_b": reference["bbox_b"],
+                "objects": reference["objects"],
             }
         elif sample.task_name == TASK_CONTINUOUS_EVENTS:
             payload = {"segments": reference["segments_sampled"]}
