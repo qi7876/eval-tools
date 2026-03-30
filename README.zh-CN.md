@@ -21,7 +21,7 @@
 - 指标计算与样本级 pass/fail 判断
 - 通过 OpenAI-compatible API 的 LLM-as-a-judge
 - Experiment A 汇总
-- Experiment B 汇总，包括 OracleTrack 流程接口
+- Experiment B 汇总，包括 OracleTrack rerun
 
 当前还没有内置 10 个 baseline 模型的 adapter。你需要按下面的 adapter 接口把模型接进来。
 
@@ -45,14 +45,19 @@
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)：实验编排
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py)：模型 adapter 接口
 - `prompts/benchmark_v1/`：任务级 inference prompt 模板
+- `prompts/benchmark_oracle_v1/`：OracleTrack 上游 inference prompt 模板
 - `prompts/structurer_v1/`：任务级 structurer prompt 模板
-- `prompts/judge_v1.md`：judge prompt 模板
+- `prompts/structurer_oracle_v1/`：OracleTrack 上游 structurer prompt 模板
+- `prompts/judge_v1/`：任务级 judge prompt 模板目录
 
 当前 prompt 模板约定：
 
 - 每个 Markdown 文件本身就是最终 prompt 正文
 - 不再使用 `# system` / `# user` 这种分段格式
 - benchmark、structurer、judge 在运行时都只发送 user prompt
+- `prompts/benchmark_v1/` 和 `prompts/structurer_v1/` 都覆盖 10 个 benchmark 任务
+- `prompts/judge_v1/` 覆盖 9 个需要 judge 的任务；`Spatial_Temporal_Grounding` 是规则评分，不走 judge prompt
+- `prompts/benchmark_oracle_v1/` 和 `prompts/structurer_oracle_v1/` 只覆盖 OracleTrack 上游 rerun 的 `Continuous_Actions_Caption` 与 `Spatial_Temporal_Grounding`
 - `configs/examples/`：常见流程的 TOML 示例配置
 
 运行后产生的目录：
@@ -182,7 +187,7 @@ invalid_json_retries = 2
 
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -231,7 +236,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 重要说明：
 
-- `Commentary` 这类当前不支持的任务会单独统计并忽略，不会阻断主评测流程
+- 原始数据里不受支持的任务会单独统计并忽略，不会阻断主评测流程
 - 当前实现按支持任务的 annotation 粒度容错
 - 某个支持任务 sample 损坏时，只会跳过该 sample，不会整份 JSON 全部失效
 
@@ -467,6 +472,7 @@ prompt_root = "prompts/structurer_v1"
 
 `[run_eval].prompt_root` 现在是必填项，必须指向一个包含 10 个任务 Markdown 模板的 prompt 目录。
 `[structurer].prompt_root` 也是必填项，必须指向 structurer prompt 模板目录。
+如果 `[run_eval].enable_oracle_track = true`，那么 `[run_eval].oracle_prompt_root` 和 `[structurer].oracle_prompt_root` 也都是必填项，并且必须指向 OracleTrack 上游 prompt 模板目录。
 
 ### adapter 接口
 
@@ -652,7 +658,7 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -708,7 +714,7 @@ concurrency = 1
 
 - prompt 是按任务细写的，不再是一套完全通用的模板
 - structurer 可以对 raw output 里的显式值做轻度整理
-- `question` 只用于帮助对齐当前任务需要哪些标准字段
+- 它根据当前任务的 schema 和 prompt 模板来判断应整理出哪些标准字段
 - 如果 raw output 里同时有分析过程和最终答案，structurer 应优先整理最终答案
 - structurer 不应凭空补出 raw output 里没有出现的 bbox、区间、tracking 或答案文本
 
@@ -723,14 +729,15 @@ concurrency = 1
 ## Judge 配置
 
 Judge 的配置写在 `run-eval` 所使用 TOML 的 `[judge]` section 里。
-`[judge].prompt_path` 指向定义最终 user-only judge prompt 的 Markdown 文件。
+`[judge].prompt_root` 必须指向一个目录，目录里要为每个进入 judge 的任务提供一个 Markdown 模板。
+每个 Markdown 文件本身就是发送给 judge 模型的最终 user-only prompt。
 
 典型配置如下：
 
 ```toml
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -746,7 +753,7 @@ type = "disabled"
 ```toml
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -772,7 +779,7 @@ export KIMI_API_KEY="your-api-key"
 ```toml
 [judge]
 backend = "static-pass"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 ```
 
 或者：
@@ -780,7 +787,7 @@ prompt_path = "prompts/judge_v1.md"
 ```toml
 [judge]
 backend = "static-fail"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 ```
 
 当前 retry 规则：
@@ -900,6 +907,8 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 - `understanding_acc_oracle`
 - `reasoning_acc_oracle`
 - `chain_success_wo_track_oracle`
+
+这里不会再出现 `chain_success_oracle`。因为 OracleTrack 下 tracking 已经被 GT 替换，Oracle rerun 唯一保留的链路级指标是纯文本链路的 `chain_success_wo_track_oracle`。
 
 ## OracleTrack
 

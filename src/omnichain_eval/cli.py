@@ -93,7 +93,7 @@ def _judge_client_from_config(judge_config: JudgeConfig):
     return OpenAIJudgeClient(
         base_url=base_url,
         api_key=api_key,
-        prompt_path=judge_config.prompt_path,
+        prompt_root=judge_config.prompt_root,
         model=judge_config.model,
         extra_body=judge_config.extra_body,
         invalid_json_retries=judge_config.invalid_json_retries,

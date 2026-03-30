@@ -34,6 +34,24 @@ def _coerce_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
     return [float(item) for item in value]
 
 
+def _scoreboard_bbox_or_sentinel(value: Any, warnings: list[str]) -> list[float]:
+    sentinel = [-1.0, -1.0, -1.0, -1.0]
+    if value is None:
+        warnings.append("bbox missing; using sentinel bbox")
+        return sentinel
+    if not isinstance(value, list):
+        warnings.append("bbox invalid; using sentinel bbox")
+        return sentinel
+    if len(value) != 4:
+        warnings.append("bbox invalid; using sentinel bbox")
+        return sentinel
+    try:
+        return [float(item) for item in value]
+    except (TypeError, ValueError):
+        warnings.append("bbox invalid; using sentinel bbox")
+        return sentinel
+
+
 def _required_object_labels(prepared_sample: PreparedSample, errors: list[str]) -> list[str]:
     gt_objects = prepared_sample.reference_payload.get("objects")
     if not isinstance(gt_objects, list):
@@ -212,7 +230,7 @@ def validate_structured_prediction(
     if task_name == TASK_SCOREBOARD_SINGLE:
         validated = {
             "text": _coerce_text_field(structured_prediction, errors),
-            "bbox": _coerce_box(structured_prediction.get("bbox"), "bbox", errors),
+            "bbox": _scoreboard_bbox_or_sentinel(structured_prediction.get("bbox"), warnings),
         }
         return StructuredPredictionResult(
             task_name=task_name,

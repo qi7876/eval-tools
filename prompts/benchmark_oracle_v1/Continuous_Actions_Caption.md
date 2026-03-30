@@ -1,15 +1,25 @@
-Task: {{task_name}}
-Task level: {{task_level}}. Protocol: {{protocol_id}}.
-Read the sampled frames in chronological order and describe the athlete actions over time.
-Question: {{question}}
-OracleTrack input for {{oracle_tracking_subject}}:
-- {{oracle_tracking_explanation}}
-- The GT tracking rows below refer to the question subject.
+You will receive sampled video frames in chronological order.
+
+Describe the target athlete's actions over time.
+
+Question:
+{{question}}
+
+The target athlete's position is already known in some sampled frames. Use the known positions below only to identify the correct target athlete across frames. The task is still to describe that target athlete's actions over time:
+
+{{oracle_tracking_explanation}}
+
 ```json
 {{oracle_tracking_json}}
 ```
-Sampled frame count: {{num_sampled_frames}}. Valid sampled frame indices: {{sampled_index_range}}.
-In each segment, `start_sampled` and `end_sampled` are sampled-frame indices.
-The GT tracking above already identifies the subject. Do not output tracking boxes.
-Return exactly one JSON object and nothing else.
-{{output_contract}}
+
+You do not need to output tracking boxes.
+
+Output requirements:
+- Return exactly one JSON object and nothing else.
+- Use this format exactly:
+  {{output_contract}}
+- Each segment should describe what the target athlete is doing during that time span.
+- In each segment, `start_sampled` and `end_sampled` must be sampled-frame indices.
+- There are {{num_sampled_frames}} sampled frames in total.
+- Valid sampled frame indices are {{sampled_index_range}}.

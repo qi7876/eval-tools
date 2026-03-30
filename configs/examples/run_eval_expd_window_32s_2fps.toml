@@ -11,7 +11,7 @@ enable_oracle_track = false
 
 [judge]
 backend = "openai"
-prompt_path = "../../prompts/judge_v1.md"
+prompt_root = "../../prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"

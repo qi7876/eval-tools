@@ -28,11 +28,7 @@ from .template_pack import TaskTemplate, TemplatePackError, load_task_template_p
 from .utils import extract_json_object
 
 _ALLOWED_STRUCTURER_VARIABLES = {
-    "task_name",
-    "question",
     "raw_output",
-    "num_sampled_frames",
-    "sampled_index_range",
     "output_schema",
     "required_object_labels_json",
 }
@@ -158,12 +154,6 @@ def load_oracle_structurer_prompt_pack(prompt_root) -> dict[str, StructurerPromp
     )
 
 
-def _sampled_index_range(sample: PreparedSample) -> str:
-    if not sample.sampled_frames_original:
-        raise StructurerPromptTemplateError(f"{sample.sample_id}: no sampled frames available")
-    return f"0..{len(sample.sampled_frames_original) - 1}"
-
-
 def _required_object_labels_json(sample: PreparedSample) -> str:
     if sample.task_name != TASK_OBJECTS_SPATIAL:
         return "[]"
@@ -226,11 +216,7 @@ def render_structurer_prompt(
             f"missing structurer prompt template for task {sample.task_name}"
         ) from exc
     variables: dict[str, Any] = {
-        "task_name": sample.task_name,
-        "question": sample.question_text,
         "raw_output": raw_output,
-        "num_sampled_frames": len(sample.sampled_frames_original),
-        "sampled_index_range": _sampled_index_range(sample),
         "output_schema": _output_schema(sample.task_name, oracle_upstream=oracle_upstream),
         "required_object_labels_json": _required_object_labels_json(sample),
     }

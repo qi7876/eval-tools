@@ -1,23 +1,16 @@
-Convert the raw model output into the benchmark's canonical JSON for {{task_name}}.
+Convert the raw model output into the canonical JSON schema.
 
-Task-specific extraction rules:
+Extraction rules:
 - Produce exactly one JSON object matching the schema.
-- Use the question only to understand what fields this task expects. Do not copy answer content from the question into the prediction.
 - Use only information that explicitly appears in the raw model output.
 - Light normalization is allowed:
-  - map obvious answer labels such as "final answer", "score", "result", or similar wording into the canonical `text` field
-  - convert explicit coordinate strings, tuples, or lists into `bbox = [xtl, ytl, xbr, ybr]`
-  - map obvious field aliases such as `box`, `bbox`, `scoreboard_box`, or similar labels into `bbox`
+  - map obvious answer labels such as "final answer", "score", or "result" into `text`
+  - if the raw model output contains an explicit valid scoreboard bbox, extract it as `bbox = [xtl, ytl, xbr, ybr]`
+  - map obvious field aliases such as `box`, `bbox`, or `scoreboard_box` into `bbox`
 - If the raw model output contains reasoning plus a final answer, extract the final answer.
 - If multiple candidate boxes or text answers appear, prefer the last ones presented as the final answer.
-- Do not infer a bbox that is not explicitly given.
-- Extract the final scoreboard answer text into `text`.
-
-Question:
-{{question}}
-
-Number of sampled frames: {{num_sampled_frames}}
-Valid sampled frame indices: {{sampled_index_range}}
+- If the raw model output does not contain an explicit valid scoreboard bbox, output `bbox = [-1, -1, -1, -1]`.
+- Do not infer a scoreboard bbox beyond what is explicitly given in the raw model output.
 
 Raw model output:
 {{raw_output}}

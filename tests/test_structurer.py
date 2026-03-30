@@ -47,7 +47,7 @@ def _prompt_pack() -> dict[str, TaskTemplate]:
         "Scoreboard_Multiple": TaskTemplate(
             task_name="Scoreboard_Multiple",
             path=Path("Scoreboard_Multiple.md"),
-            prompt_template="{{question}}\n{{raw_output}}\n{{output_schema}}",
+            prompt_template="{{raw_output}}\n{{output_schema}}",
         )
     }
 
@@ -136,9 +136,12 @@ def test_rendered_structurer_prompt_for_scoreboard_single_includes_bbox_rules():
         'Reasoning...\nFinal answer: {"text": "1-0", "bbox": [10, 20, 30, 40]}',
     )
 
+    assert "Convert the raw model output into the canonical JSON schema." in rendered.prompt_text
     assert "extract the final answer" in rendered.prompt_text
     assert "bbox = [xtl, ytl, xbr, ybr]" in rendered.prompt_text
-    assert "Do not infer a bbox that is not explicitly given." in rendered.prompt_text
+    assert "bbox = [-1, -1, -1, -1]" in rendered.prompt_text
+    assert "explicit valid scoreboard bbox" in rendered.prompt_text
+    assert "Question:" not in rendered.prompt_text
 
 
 def test_rendered_structurer_prompt_for_actions_includes_tracking_rules():
@@ -153,11 +156,12 @@ def test_rendered_structurer_prompt_for_actions_includes_tracking_rules():
     )
 
     assert "normalize explicit interval expressions" in rendered.prompt_text
-    assert "normalize explicit tracking rows" in rendered.prompt_text
+    assert "normalize explicit tracking rows or coordinate strings" in rendered.prompt_text
     assert "`bbox_mot` must be formatted as `[left, top, width, height]`." in rendered.prompt_text
+    assert "Question:" not in rendered.prompt_text
 
 
-def test_rendered_structurer_prompt_for_text_task_uses_question_only_for_alignment():
+def test_rendered_structurer_prompt_for_text_task_is_pure_extractor():
     prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
     rendered = render_structurer_prompt(
         prompt_pack,
@@ -168,9 +172,44 @@ def test_rendered_structurer_prompt_for_text_task_uses_question_only_for_alignme
         "Analysis...\nFinal answer: the defender blocked the lane.",
     )
 
-    assert "Use the question only to understand what field the task expects." in rendered.prompt_text
-    assert "Do not copy answer content from the question into the prediction." in rendered.prompt_text
+    assert "Use only information that explicitly appears in the raw model output." in rendered.prompt_text
     assert "prefer the last one presented as the final answer." in rendered.prompt_text
+    assert "Question:" not in rendered.prompt_text
+    assert "{{question}}" not in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_ai_coach_uses_mistake_labels_not_suggestion():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="AI_Coach",
+            question_text="What did the player do wrong?",
+        ),
+        "Final answer: the player exposed the ball and lost balance.",
+    )
+
+    assert '"mistake"' in rendered.prompt_text
+    assert '"error"' in rendered.prompt_text
+    assert '"suggestion"' not in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_score_prediction_uses_general_answer_language():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Score_Prediction",
+            question_text="Who is more likely to finish ahead?",
+        ),
+        "Final answer: Team A is more likely to finish ahead.",
+    )
+
+    assert '"answer"' in rendered.prompt_text
+    assert '"conclusion"' in rendered.prompt_text
+    assert "candidate answers" in rendered.prompt_text
+    assert "candidate predictions" not in rendered.prompt_text
+    assert '"winner"' not in rendered.prompt_text
 
 
 def test_rendered_structurer_prompt_for_objects_spatial_includes_label_rules():
@@ -194,6 +233,29 @@ def test_rendered_structurer_prompt_for_objects_spatial_includes_label_rules():
     assert "Use exactly these object labels" in rendered.prompt_text
     assert '["Player A", "Player B"]' in rendered.prompt_text
     assert "Match boxes by explicit label, not by first/second position." in rendered.prompt_text
+    assert "Question:" not in rendered.prompt_text
+
+
+def test_load_structurer_prompt_pack_rejects_removed_context_variables(tmp_path):
+    for task_name in [
+        "AI_Coach",
+        "Continuous_Actions_Caption",
+        "Continuous_Events_Caption",
+        "Objects_Spatial_Relationships",
+        "Score_Prediction",
+        "Scoreboard_Multiple",
+        "Scoreboard_Single",
+        "Spatial_Imagination",
+        "Spatial_Temporal_Grounding",
+        "Temporal_Causal",
+    ]:
+        (tmp_path / f"{task_name}.md").write_text(
+            "Bad: {{task_name}} {{question}} {{num_sampled_frames}} {{sampled_index_range}}\n",
+            encoding="utf-8",
+        )
+
+    with pytest.raises(Exception, match="unsupported variable"):
+        load_structurer_prompt_pack(tmp_path)
 
 
 def test_normal_structurer_for_actions_requires_tracking():

@@ -63,6 +63,15 @@ def temporal_iou(pred_interval: list[int], gt_interval: list[int]) -> float:
     return intersection / union
 
 
+def _is_scoreboard_bbox_sentinel(box: Any) -> bool:
+    if not isinstance(box, list) or len(box) != 4:
+        return False
+    try:
+        return all(float(value) == -1.0 for value in box)
+    except (TypeError, ValueError):
+        return False
+
+
 def _judge_required(task_name: str) -> bool:
     return task_name in JUDGE_REQUIRED_TASKS
 
@@ -296,8 +305,11 @@ def evaluate_sample(
     predicted_segments_original: list[dict[str, Any]] | None = None
 
     if prepared_sample.task_name == TASK_SCOREBOARD_SINGLE:
-        if structured and len(structured.get("bbox", [])) == 4:
-            iou = bbox_iou(structured["bbox"], prepared_sample.reference_payload["bbox"])
+        predicted_bbox = structured.get("bbox") if structured else None
+        if _is_scoreboard_bbox_sentinel(predicted_bbox):
+            iou = 0.0
+        elif structured and isinstance(predicted_bbox, list) and len(predicted_bbox) == 4:
+            iou = bbox_iou(predicted_bbox, prepared_sample.reference_payload["bbox"])
         else:
             iou = 0.0
         metrics["bbox_iou"] = iou

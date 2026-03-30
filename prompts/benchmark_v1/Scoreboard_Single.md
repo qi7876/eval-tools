@@ -1,8 +1,15 @@
-Task: {{task_name}}
-Task level: {{task_level}}. Protocol: {{protocol_id}}.
-Read the scoreboard at the relevant moment and localize it accurately.
-Question: {{question}}
-Sampled frame count: {{num_sampled_frames}}. Valid sampled frame indices: {{sampled_index_range}}.
-`bbox` uses `[xtl, ytl, xbr, ybr]`.
-Return exactly one JSON object and nothing else.
-{{output_contract}}
+You will receive one sampled video frame.
+
+Use the scoreboard shown in that frame to answer the question.
+Also output one bounding box for the entire scoreboard. The box should cover the full scoreboard, not only the small region that contains the needed text.
+
+Question:
+{{question}}
+
+Output requirements:
+- Return exactly one JSON object and nothing else.
+- Use this format exactly:
+  {{output_contract}}
+- `text` should answer the question using the scoreboard content.
+- `bbox` must cover the whole scoreboard.
+- `bbox` must use `[xtl, ytl, xbr, ybr]`.

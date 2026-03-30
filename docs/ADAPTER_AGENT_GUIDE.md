@@ -82,6 +82,14 @@ Do not re-implement any of this inside the adapter:
 
 The framework constructs the input and the adapter only feeds it into the model.
 
+### Prompt packs the framework owns
+
+The adapter does not choose prompts. The framework loads them from TOML:
+
+- `prompts/benchmark_v1/`: 10 benchmark tasks
+- `prompts/judge_v1/`: 9 judge-evaluated tasks
+- `prompts/benchmark_oracle_v1/` and `prompts/structurer_oracle_v1/`: OracleTrack upstream reruns for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding` only
+
 ## Message Semantics You Must Preserve
 
 ### Non-chain samples
@@ -99,7 +107,7 @@ For `Spatial_Imagination` downstream evaluation, the framework automatically bui
 
 The adapter will receive messages in this exact order:
 
-1. upstream user question text
+1. upstream rendered user prompt
 2. upstream assistant raw model output
 3. downstream rendered user prompt
 
@@ -175,7 +183,7 @@ For downstream chain samples, forward the full history into the model. The adapt
 
 ### 5. Ignore OracleTrack implementation details
 
-OracleTrack is framework-owned. The framework injects GT tracking into the upstream rerun prompt and rebuilds the downstream history itself. The adapter does not need any OracleTrack-specific branch.
+OracleTrack is framework-owned. The framework injects GT tracking into the upstream rerun prompt body, keeps that prompt close to the normal task template, and rebuilds downstream history from the full rendered upstream prompt plus the upstream raw answer. The adapter does not need any OracleTrack-specific branch.
 
 ## Strong Recommendations
 
@@ -332,7 +340,7 @@ type = "disabled"
 
 [judge]
 backend = "openai"
-prompt_path = "../../prompts/judge_v1.md"
+prompt_root = "../../prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -395,7 +403,7 @@ Good test targets:
 - message flattening helper
 - frame-path collection helper
 - lazy-load behavior
-- oracle-track flag routing if supported
+- preservation of message order when flattening multi-turn history
 
 If real-model inference is too heavy for CI, do not force it into CI. Keep unit tests local to pure helpers and do manual smoke validation with the actual model.
 
@@ -420,7 +428,6 @@ The adapter is complete when all of the following are true:
 4. Chain downstream samples write to `chain_predictions.jsonl` and preserve upstream rendered prompt plus upstream raw answer in history.
 5. Re-running the same `run_name` resumes from existing artifacts.
 6. The adapter returns only raw model text and leaves structuring/judging to the framework.
-7. No Commentary-specific logic is added. Commentary is intentionally out of scope for this framework.
 
 ## If You Hit An Environment Blocker
 

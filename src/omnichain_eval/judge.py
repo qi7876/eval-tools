@@ -13,29 +13,19 @@ from openai import OpenAI
 from .constants import (
     JUDGE_JSON_KEYS,
     JUDGE_MODEL_DEFAULT,
-    TASK_AI_COACH,
-    TASK_CONTINUOUS_ACTIONS,
-    TASK_CONTINUOUS_EVENTS,
-    TASK_OBJECTS_SPATIAL,
-    TASK_SCOREBOARD_MULTIPLE,
-    TASK_SCOREBOARD_SINGLE,
-    TASK_SCORE_PREDICTION,
-    TASK_SPATIAL_IMAGINATION,
-    TASK_TEMPORAL_CAUSAL,
+    JUDGE_REQUIRED_TASKS,
 )
 from .schema import JudgeDecision
 from .template_pack import (
     TaskTemplate,
     TemplatePackError,
-    load_markdown_prompt_template,
+    load_task_template_pack,
     render_template_text,
 )
 from .utils import extract_json_object
 
 _ALLOWED_JUDGE_VARIABLES = {
-    "task_name",
     "question_text",
-    "task_specific_rule",
     "reference_payload_json",
     "prediction_payload_json",
     "required_json_schema_json",
@@ -43,6 +33,7 @@ _ALLOWED_JUDGE_VARIABLES = {
 
 JudgePromptTemplateError = TemplatePackError
 JudgePromptTemplate = TaskTemplate
+JudgePromptPack = dict[str, TaskTemplate]
 
 
 class JudgeClient(ABC):
@@ -114,53 +105,21 @@ def default_judge_fail(reason: str, raw_response: str | None = None) -> JudgeDec
     )
 
 
-def _task_instruction(task_name: str) -> str:
-    if task_name in {
-        TASK_SCOREBOARD_SINGLE,
-        TASK_SCOREBOARD_MULTIPLE,
-        TASK_OBJECTS_SPATIAL,
-        TASK_SPATIAL_IMAGINATION,
-        TASK_SCORE_PREDICTION,
-    }:
-        return (
-            "Rule: all core slots must be correct. Key entity, direction, score, rank, "
-            "or relation errors cause failure."
-        )
-    if task_name == TASK_TEMPORAL_CAUSAL:
-        return (
-            "Rule: pass if the main cause is correct and there is no key hallucination. "
-            "The main cause must not be replaced by a side effect."
-        )
-    if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
-        return (
-            "Rule: judge time alignment and text jointly. Key actions or events must be "
-            "covered, temporal order must be correct, and rough alignment must be reasonable."
-        )
-    if task_name == TASK_AI_COACH:
-        return (
-            "Rule: multiple valid answers may exist. Pass if the suggestion is relevant, "
-            "actionable, and aligned with the reference intent."
-        )
-    return "Apply the benchmark rubric strictly."
-
-
-def load_judge_prompt_template(path: Path) -> JudgePromptTemplate:
-    return load_markdown_prompt_template(
-        path,
+def load_judge_prompt_pack(prompt_root: Path) -> JudgePromptPack:
+    return load_task_template_pack(
+        prompt_root,
         allowed_variables=_ALLOWED_JUDGE_VARIABLES,
+        task_names=sorted(JUDGE_REQUIRED_TASKS),
     )
 
 
 def _judge_variables(
-    task_name: str,
     question_text: str,
     reference_payload: dict[str, Any],
     prediction_payload: dict[str, Any],
 ) -> dict[str, str]:
     payload = {
-        "task_name": task_name,
         "question_text": question_text,
-        "task_specific_rule": _task_instruction(task_name),
         "reference_payload_json": json.dumps(reference_payload, ensure_ascii=False, indent=2),
         "prediction_payload_json": json.dumps(prediction_payload, ensure_ascii=False, indent=2),
         "required_json_schema_json": json.dumps(
@@ -180,15 +139,18 @@ def _judge_variables(
 
 
 def render_judge_prompt(
-    template: JudgePromptTemplate,
+    prompt_pack: JudgePromptPack,
     *,
     task_name: str,
     question_text: str,
     reference_payload: dict[str, Any],
     prediction_payload: dict[str, Any],
-) -> tuple[str, str]:
+) -> str:
+    try:
+        template = prompt_pack[task_name]
+    except KeyError as exc:
+        raise JudgePromptTemplateError(f"missing judge prompt template for task {task_name}") from exc
     variables = _judge_variables(
-        task_name,
         question_text,
         reference_payload,
         prediction_payload,
@@ -204,13 +166,13 @@ class OpenAIJudgeClient(JudgeClient):
         *,
         base_url: str,
         api_key: str,
-        prompt_path: Path,
+        prompt_root: Path,
         model: str = JUDGE_MODEL_DEFAULT,
         extra_body: dict[str, Any] | None = None,
         invalid_json_retries: int = 0,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
-        self.prompt_template = load_judge_prompt_template(prompt_path)
+        self.prompt_pack = load_judge_prompt_pack(prompt_root)
         self.model = model
         self.extra_body = dict(extra_body or {})
         self.invalid_json_retries = invalid_json_retries
@@ -219,7 +181,7 @@ class OpenAIJudgeClient(JudgeClient):
     def from_env(
         cls,
         *,
-        prompt_path: Path,
+        prompt_root: Path,
         extra_body: dict[str, Any] | None = None,
         invalid_json_retries: int = 0,
     ) -> "OpenAIJudgeClient":
@@ -233,7 +195,7 @@ class OpenAIJudgeClient(JudgeClient):
         return cls(
             base_url=base_url,
             api_key=api_key,
-            prompt_path=prompt_path,
+            prompt_root=prompt_root,
             model=model,
             extra_body=extra_body,
             invalid_json_retries=invalid_json_retries,
@@ -313,7 +275,7 @@ class OpenAIJudgeClient(JudgeClient):
         prediction_payload: dict[str, Any],
     ) -> JudgeDecision:
         prompt_text = render_judge_prompt(
-            self.prompt_template,
+            self.prompt_pack,
             task_name=task_name,
             question_text=question_text,
             reference_payload=reference_payload,

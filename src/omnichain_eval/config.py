@@ -61,7 +61,7 @@ class PrepareDataConfig:
 @dataclass(slots=True)
 class JudgeConfig:
     backend: str = "openai"
-    prompt_path: Path | None = None
+    prompt_root: Path | None = None
     base_url: str | None = None
     api_key: str | None = None
     api_key_env: str = "EVAL_JUDGE_API_KEY"
@@ -166,7 +166,7 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
         raise ValueError("[judge].extra_body must be a table")
     config = JudgeConfig(
         backend=str(table.get("backend", "openai")),
-        prompt_path=_resolve_path(base_dir, table.get("prompt_path")),
+        prompt_root=_resolve_path(base_dir, table.get("prompt_root")),
         base_url=table.get("base_url"),
         api_key=table.get("api_key"),
         api_key_env=str(table.get("api_key_env", "EVAL_JUDGE_API_KEY")),
@@ -181,8 +181,8 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
         raise ValueError("[judge].invalid_json_retries must be >= 0")
     if config.concurrency < 1:
         raise ValueError("[judge].concurrency must be >= 1")
-    if config.prompt_path is None:
-        raise ValueError("[judge].prompt_path is required")
+    if config.prompt_root is None:
+        raise ValueError("[judge].prompt_root is required")
     return config
 
 

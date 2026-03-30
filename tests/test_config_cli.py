@@ -26,7 +26,7 @@ oracle_prompt_root = "../prompts/benchmark_oracle_v1"
 
 [judge]
 backend = "openai"
-prompt_path = "../prompts/judge_v1.md"
+prompt_root = "../prompts/judge_v1"
 base_url = "http://judge.example/v1"
 api_key_env = "CUSTOM_JUDGE_KEY"
 model = "judge-model"
@@ -65,7 +65,7 @@ type = "disabled"
     assert config.enable_oracle_track is True
     assert config.oracle_prompt_root == (tmp_path / "prompts" / "benchmark_oracle_v1").resolve()
     assert config.judge.backend == "openai"
-    assert config.judge.prompt_path == (tmp_path / "prompts" / "judge_v1.md").resolve()
+    assert config.judge.prompt_root == (tmp_path / "prompts" / "judge_v1").resolve()
     assert config.judge.base_url == "http://judge.example/v1"
     assert config.judge.api_key_env == "CUSTOM_JUDGE_KEY"
     assert config.judge.model == "judge-model"
@@ -93,7 +93,7 @@ protocol = "main"
 prompt_root = "prompts/benchmark_v1"
 
 [judge]
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 
 [structurer]
 backend = "static-parse"
@@ -116,7 +116,7 @@ protocol = "main"
 adapter = "mock"
 
 [judge]
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 
 [structurer]
 backend = "static-parse"
@@ -141,7 +141,7 @@ adapter = "mock"
 enable_oracle_track = true
 
 [judge]
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 
 [structurer]
 backend = "static-parse"
@@ -165,7 +165,7 @@ prompt_root = "prompts/benchmark_v1"
 adapter = "mock"
 
 [judge]
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 
 [structurer]
 backend = "static-parse"
@@ -177,7 +177,7 @@ backend = "static-parse"
         load_run_eval_config(config_path)
 
 
-def test_load_run_eval_config_requires_judge_prompt_path(tmp_path):
+def test_load_run_eval_config_requires_judge_prompt_root(tmp_path):
     config_path = tmp_path / "invalid.toml"
     config_path.write_text(
         """
@@ -194,7 +194,7 @@ prompt_root = "prompts/structurer_v1"
         encoding="utf-8",
     )
 
-    with pytest.raises(ValueError, match=r"\[judge\]\.prompt_path is required"):
+    with pytest.raises(ValueError, match=r"\[judge\]\.prompt_root is required"):
         load_run_eval_config(config_path)
 
 

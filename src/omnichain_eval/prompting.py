@@ -22,9 +22,6 @@ from .template_pack import TaskTemplate, TemplatePackError, load_task_template_p
 
 _ALLOWED_INFERENCE_VARIABLES = {
     "question",
-    "task_name",
-    "task_level",
-    "protocol_id",
     "num_sampled_frames",
     "sampled_index_range",
     "output_contract",
@@ -32,7 +29,6 @@ _ALLOWED_INFERENCE_VARIABLES = {
 }
 
 _ALLOWED_ORACLE_INFERENCE_VARIABLES = _ALLOWED_INFERENCE_VARIABLES | {
-    "oracle_tracking_subject",
     "oracle_tracking_explanation",
     "oracle_tracking_json",
 }
@@ -130,9 +126,6 @@ def render_prompt(
 
     variables: dict[str, object] = {
         "question": sample.question_text,
-        "task_name": sample.task_name,
-        "task_level": sample.task_level,
-        "protocol_id": sample.protocol_id,
         "num_sampled_frames": len(sample.sampled_frames_original),
         "sampled_index_range": _sampled_index_range(sample),
         "output_contract": _output_contract(sample.task_name),
@@ -147,26 +140,17 @@ def render_prompt(
     )
 
 
-def _oracle_tracking_subject(sample: PreparedSample) -> str:
-    if sample.task_name == TASK_STG:
-        return "the target subject involved in the grounded action"
-    if sample.task_name == TASK_CONTINUOUS_ACTIONS:
-        return "the target athlete referred to in the question"
-    raise PromptTemplateError(f"unsupported oracle upstream task: {sample.task_name}")
-
-
 def _oracle_tracking_explanation(sample: PreparedSample) -> str:
     if sample.task_name == TASK_STG:
         return (
             "Each row uses `frame_sampled` as a sampled-frame index and `bbox_mot` as "
-            "`[left, top, width, height]`. Use these GT boxes to identify the target "
-            "subject across frames. You only need to predict `time_window_sampled`."
+            "`[left, top, width, height]`. You only need to predict "
+            "`time_window_sampled`."
         )
     if sample.task_name == TASK_CONTINUOUS_ACTIONS:
         return (
             "Each row uses `frame_sampled` as a sampled-frame index and `bbox_mot` as "
-            "`[left, top, width, height]`. Use these GT boxes to identify the target "
-            "athlete across frames. You only need to describe action segments."
+            "`[left, top, width, height]`. You only need to describe action segments."
         )
     raise PromptTemplateError(f"unsupported oracle upstream task: {sample.task_name}")
 
@@ -188,13 +172,9 @@ def render_oracle_upstream_prompt(
         raise PromptTemplateError(f"missing Oracle prompt template for task {sample.task_name}") from exc
     variables: dict[str, object] = {
         "question": sample.question_text,
-        "task_name": sample.task_name,
-        "task_level": sample.task_level,
-        "protocol_id": sample.protocol_id,
         "num_sampled_frames": len(sample.sampled_frames_original),
         "sampled_index_range": _sampled_index_range(sample),
         "output_contract": _oracle_output_contract(sample.task_name),
-        "oracle_tracking_subject": _oracle_tracking_subject(sample),
         "oracle_tracking_explanation": _oracle_tracking_explanation(sample),
         "oracle_tracking_json": json.dumps(tracking_gt, ensure_ascii=False, indent=2),
     }

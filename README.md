@@ -23,7 +23,7 @@ The current implementation includes:
 - Framework-owned prompt building, chain-history injection, structured extraction, and scoring
 - LLM-as-a-judge integration through an OpenAI-compatible API
 - Experiment A summary
-- Experiment B summary, including OracleTrack plumbing
+- Experiment B summary, including OracleTrack reruns
 
 It does not yet ship the 10 baseline adapters themselves. You plug models in through the adapter interface described below.
 
@@ -47,14 +47,19 @@ Key files:
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py): experiment orchestration
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py): adapter interface
 - `prompts/benchmark_v1/`: task-specific inference prompt pack
+- `prompts/benchmark_oracle_v1/`: OracleTrack upstream inference prompt pack
 - `prompts/structurer_v1/`: task-specific structurer prompt pack
-- `prompts/judge_v1.md`: judge prompt template
+- `prompts/structurer_oracle_v1/`: OracleTrack upstream structurer prompt pack
+- `prompts/judge_v1/`: task-specific judge prompt pack
 
 Prompt-template convention:
 
 - each Markdown file is the final prompt template body
 - there are no `# system` / `# user` sections anymore
 - benchmark, structurer, and judge all send user-only prompts at runtime
+- `prompts/benchmark_v1/` and `prompts/structurer_v1/` each contain the 10 benchmark tasks
+- `prompts/judge_v1/` contains the 9 judge-evaluated tasks; `Spatial_Temporal_Grounding` is rule-based and does not use judge prompts
+- `prompts/benchmark_oracle_v1/` and `prompts/structurer_oracle_v1/` only cover OracleTrack upstream reruns for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding`
 - `configs/examples/`: example TOML configs for common workflows
 
 Generated directories:
@@ -136,7 +141,7 @@ That means:
 - model adapter paths live in TOML
 - inference prompt roots live in TOML
 - structurer backend and prompt roots live in TOML
-- judge backend and prompt path live in TOML
+- judge backend and prompt roots live in TOML
 
 This makes it practical to maintain one config per experiment, per protocol, or per model.
 
@@ -176,7 +181,7 @@ invalid_json_retries = 2
 
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -216,7 +221,7 @@ Behavior:
 
 Important:
 
-- unsupported tasks such as `Commentary` are reported separately and ignored by the main evaluation pipeline
+- unsupported raw tasks are reported separately and ignored by the main evaluation pipeline
 - invalid supported annotations are reported individually
 - a broken supported sample does not automatically make the whole file unusable during prepared-data generation
 
@@ -423,6 +428,7 @@ prompt_root = "prompts/structurer_v1"
 The adapter class must be importable in the current Python environment.
 `[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 10 task Markdown templates.
 `[structurer].prompt_root` is also required and must point to the structurer prompt pack.
+If `[run_eval].enable_oracle_track = true`, then `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` are also required and must point to the OracleTrack upstream prompt packs.
 
 ### Adapter Interface
 
@@ -605,7 +611,7 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -661,7 +667,7 @@ Current structurer behavior:
 
 - prompts are task-specific rather than one shared generic prompt
 - the structurer may do light normalization of explicit values from the raw model output
-- it may use the question only to understand which canonical fields the current task expects
+- it uses the task-specific schema and prompt template to determine which canonical fields the current task expects
 - it should prefer the final answer if the raw output contains reasoning plus a final answer
 - it must not invent missing boxes, intervals, tracking rows, or answer text that do not appear in the raw model output
 
@@ -676,14 +682,15 @@ Retry behavior:
 ## Judge Configuration
 
 Judge settings live in the `[judge]` section of the TOML file used by `run-eval`.
-`[judge].prompt_path` points to the Markdown file that defines the final user-only judge prompt.
+`[judge].prompt_root` must point to a directory containing one Markdown template per judge-evaluated task.
+Each Markdown file is the final user-only prompt body sent to the judge model.
 
 Typical OpenAI-compatible configuration:
 
 ```toml
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -699,7 +706,7 @@ type = "disabled"
 ```toml
 [judge]
 backend = "openai"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 base_url = "https://api.moonshot.cn/v1"
 api_key_env = "KIMI_API_KEY"
 model = "kimi-k2.5"
@@ -725,7 +732,7 @@ For local smoke tests you can avoid external judge calls by changing the backend
 ```toml
 [judge]
 backend = "static-pass"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 ```
 
 or:
@@ -733,7 +740,7 @@ or:
 ```toml
 [judge]
 backend = "static-fail"
-prompt_path = "prompts/judge_v1.md"
+prompt_root = "prompts/judge_v1"
 ```
 
 Retry behavior:
@@ -853,6 +860,8 @@ If oracle rerun information is available, it also computes:
 - `understanding_acc_oracle`
 - `reasoning_acc_oracle`
 - `chain_success_wo_track_oracle`
+
+There is intentionally no `chain_success_oracle` field. Under OracleTrack, tracking is replaced by GT, so the only Oracle chain-level metric is the text-only `chain_success_wo_track_oracle`.
 
 ## OracleTrack
 

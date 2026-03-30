@@ -35,7 +35,7 @@ PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_v1
 ORACLE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "benchmark_oracle_v1"
 STRUCTURER_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
 ORACLE_STRUCTURER_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_oracle_v1"
-JUDGE_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1.md"
+JUDGE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1"
 
 
 def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
@@ -151,7 +151,7 @@ oracle_prompt_root = "{ORACLE_PROMPT_ROOT}"
 
 [judge]
 backend = "static-pass"
-prompt_path = "{JUDGE_PROMPT_PATH}"
+prompt_root = "{JUDGE_PROMPT_ROOT}"
 invalid_json_retries = {judge_invalid_json_retries}
 concurrency = 1
 
@@ -514,7 +514,10 @@ def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_reuses_rendered_hist
     upstream_messages = adapter.inputs[0].messages_as_dicts()
     assert [message["role"] for message in upstream_messages] == ["user"]
     assert upstream_messages[0]["content"] == oracle_upstream_prompt.prompt_text
-    assert "OracleTrack input for the target athlete referred to in the question:" in upstream_messages[0]["content"]
+    assert (
+        "The target athlete's position is already known in some sampled frames."
+        in upstream_messages[0]["content"]
+    )
     assert '"bbox_mot"' in upstream_messages[0]["content"]
     assert pair_result["upstream"].raw_output == json.dumps(
         {
