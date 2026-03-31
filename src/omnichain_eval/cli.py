@@ -448,6 +448,7 @@ def cmd_prepare_data(args: argparse.Namespace) -> int:
         config.data_root,
         config.prepared_root,
         config.protocols,
+        workers=config.workers,
     )
     for result in results:
         print(

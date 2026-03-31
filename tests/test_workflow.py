@@ -22,7 +22,7 @@ from omnichain_eval.structurer import (
     StructurerService,
     load_structurer_prompt_pack,
 )
-from omnichain_eval.utils import read_json
+from omnichain_eval.utils import read_json, read_jsonl
 
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "mini_data"
@@ -66,6 +66,15 @@ def build_fixture_with_q_window_end_equal_total_frames(tmp_path: Path) -> Path:
             annotation["Q_window_frame"] = [100, payload["video_metadata"]["total_frames"]]
             break
     annotation_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return dataset_root
+
+
+def build_fixture_with_two_videos(tmp_path: Path) -> Path:
+    dataset_root = tmp_path / "dataset"
+    shutil.copytree(FIXTURE_ROOT, dataset_root)
+    source_dir = dataset_root / "TestSport" / "TestEvent"
+    copied_dir = dataset_root / "TestSport" / "TestEventParallel"
+    shutil.copytree(source_dir, copied_dir)
     return dataset_root
 
 
@@ -183,6 +192,30 @@ def test_prepare_data_clips_q_window_end_equal_to_total_frames(monkeypatch, tmp_
     long_window_sample = next(sample for sample in prepared_samples if sample.annotation_id == "2")
     assert long_window_sample.sampled_frames_original[-1] == 499
     assert len(long_window_sample.sampled_frames_original) == 64
+
+
+def test_prepare_data_parallel_workers_preserve_deterministic_outputs(monkeypatch, tmp_path):
+    dataset_root = build_fixture_with_two_videos(tmp_path)
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+
+    prepared_root_serial = tmp_path / "prepared_serial"
+    prepared_root_parallel = tmp_path / "prepared_parallel"
+
+    build_prepared_data(dataset_root, prepared_root_serial, ["main"], workers=1)
+    build_prepared_data(dataset_root, prepared_root_parallel, ["main"], workers=2)
+
+    assert read_jsonl(prepared_root_serial / "main" / "index.jsonl") == read_jsonl(
+        prepared_root_parallel / "main" / "index.jsonl"
+    )
+    assert read_json(prepared_root_serial / "main" / "stats.json") == read_json(
+        prepared_root_parallel / "main" / "stats.json"
+    )
+    assert read_json(
+        prepared_root_serial / "main" / "build_manifest.json"
+    ) == read_json(prepared_root_parallel / "main" / "build_manifest.json")
 
 
 def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():

@@ -146,6 +146,7 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 - protocol id
 - adapter 路径
 - inference prompt 路径
+- prepare-data 的 worker 数
 - structurer backend 与 prompt 路径
 - judge backend 与 prompt 路径
 
@@ -296,6 +297,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 [prepare_data]
 data_root = "/data/public_data/mllmbenchmark"
 prepared_root = "/data/public_data/mllmbenchmark_prepared"
+workers = 8
 protocols = ["main"]
 ```
 
@@ -306,12 +308,14 @@ protocols = ["main"]
 - 把每个 sample 写成一个独立 bundle
 - 存储 sampled-to-original 映射
 - 存储任务评测需要的 GT sidecar
+- 当 `[prepare_data].workers > 1` 时，会按视频并发处理
 
 重要说明：
 
 - 只有当前支持的 benchmark task 会进入 prepared-data
 - 不支持的任务会被忽略，并记录到协议元数据里
 - 支持任务本身如果有校验错误，`prepare-data` 仍然会直接失败
+- `workers` 控制单个 protocol 内部按视频并发的线程数；不同 protocol 之间仍然串行构建
 
 ### 为什么要先构建 prepared data
 

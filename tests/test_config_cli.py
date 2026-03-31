@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from omnichain_eval.cli import main
-from omnichain_eval.config import load_run_eval_config
+from omnichain_eval.config import load_prepare_data_config, load_run_eval_config
 
 
 def test_load_run_eval_config_resolves_paths_and_judge_options(tmp_path):
@@ -206,16 +206,24 @@ def test_prepare_data_command_uses_toml_config(tmp_path, monkeypatch):
 data_root = "data"
 prepared_root = "prepared_data"
 protocols = ["main", "expd_window_32s_2fps"]
+workers = 4
 """.strip(),
         encoding="utf-8",
     )
 
     captured: dict[str, object] = {}
 
-    def fake_build_prepared_data(data_root: Path, prepared_root: Path, protocols: list[str]):
+    def fake_build_prepared_data(
+        data_root: Path,
+        prepared_root: Path,
+        protocols: list[str],
+        *,
+        workers: int,
+    ):
         captured["data_root"] = data_root
         captured["prepared_root"] = prepared_root
         captured["protocols"] = protocols
+        captured["workers"] = workers
         return [
             {
                 "num_prepared_samples": 3,
@@ -241,3 +249,42 @@ protocols = ["main", "expd_window_32s_2fps"]
     assert captured["data_root"] == (tmp_path / "data").resolve()
     assert captured["prepared_root"] == (tmp_path / "prepared_data").resolve()
     assert captured["protocols"] == ["main", "expd_window_32s_2fps"]
+    assert captured["workers"] == 4
+
+
+def test_load_prepare_data_config_parses_workers(tmp_path):
+    config_path = tmp_path / "prepare.toml"
+    config_path.write_text(
+        """
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["main"]
+workers = 8
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_prepare_data_config(config_path)
+
+    assert config.data_root == (tmp_path / "data").resolve()
+    assert config.prepared_root == (tmp_path / "prepared_data").resolve()
+    assert config.protocols == ["main"]
+    assert config.workers == 8
+
+
+def test_load_prepare_data_config_rejects_non_positive_workers(tmp_path):
+    config_path = tmp_path / "prepare.toml"
+    config_path.write_text(
+        """
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["main"]
+workers = 0
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[prepare_data\]\.workers must be >= 1"):
+        load_prepare_data_config(config_path)

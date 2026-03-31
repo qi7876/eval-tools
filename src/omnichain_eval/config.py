@@ -56,6 +56,7 @@ class PrepareDataConfig:
     data_root: Path = Path("data")
     prepared_root: Path = Path("prepared_data")
     protocols: list[str] = field(default_factory=lambda: ["main"])
+    workers: int = 1
 
 
 @dataclass(slots=True)
@@ -148,7 +149,7 @@ def load_prepare_data_config(path: Path) -> PrepareDataConfig:
     protocols = table.get("protocols", ["main"])
     if not isinstance(protocols, list) or not all(isinstance(value, str) for value in protocols):
         raise ValueError("[prepare_data].protocols must be a list of strings")
-    return PrepareDataConfig(
+    config = PrepareDataConfig(
         data_root=_resolve_path(base_dir, table.get("data_root"), default="data"),  # type: ignore[arg-type]
         prepared_root=_resolve_path(
             base_dir,
@@ -156,7 +157,11 @@ def load_prepare_data_config(path: Path) -> PrepareDataConfig:
             default="prepared_data",
         ),  # type: ignore[arg-type]
         protocols=list(protocols),
+        workers=int(table.get("workers", 1)),
     )
+    if config.workers < 1:
+        raise ValueError("[prepare_data].workers must be >= 1")
+    return config
 
 
 def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:

@@ -140,6 +140,7 @@ That means:
 - protocol ids live in TOML
 - model adapter paths live in TOML
 - inference prompt roots live in TOML
+- prepare-data worker count lives in TOML
 - structurer backend and prompt roots live in TOML
 - judge backend and prompt roots live in TOML
 
@@ -274,6 +275,7 @@ If you want a dedicated config just for one protocol, create a separate TOML fil
 [prepare_data]
 data_root = "/data/public_data/mllmbenchmark"
 prepared_root = "/data/public_data/mllmbenchmark_prepared"
+workers = 8
 protocols = ["main"]
 ```
 
@@ -283,12 +285,14 @@ What it does:
 - applies the protocol-specific sampling rule
 - decodes the required frames
 - writes each sample as a prepared bundle
+- parallelizes work across videos when `[prepare_data].workers > 1`
 
 Important:
 
 - only supported benchmark tasks are prepared
 - unsupported tasks are ignored and recorded in protocol metadata
 - supported-task validation errors still fail the command before cache generation
+- `workers` controls video-level thread concurrency inside one protocol; protocols are still built sequentially
 
 The cache is sample-centric. The runtime evaluation path reads from the configured `prepared_root` instead of decoding raw videos again.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -224,13 +225,56 @@ def _protocol_stats(prepared_samples: list[PreparedSample]) -> dict[str, Any]:
     }
 
 
+def _build_video_cache_entries(
+    video_path: Path,
+    video_records: list[SampleRecord],
+    protocol: ProtocolSpec,
+    samples_root: Path,
+) -> tuple[list[PreparedSample], list[dict[str, Any]]]:
+    ordered_records = sorted(video_records, key=lambda record: record.sample_id)
+    sample_plan = {
+        record.sample_id: sample_frames_for_sample(record, protocol)
+        for record in ordered_records
+    }
+    union_frames = sorted({frame for frames in sample_plan.values() for frame in frames})
+    decoded_frames = decode_selected_frames(video_path, union_frames)
+
+    prepared_samples: list[PreparedSample] = []
+    index_rows: list[dict[str, Any]] = []
+    for record in ordered_records:
+        bundle_dir = sample_bundle_dir(samples_root, record.video_key, record.annotation_id)
+        ensure_directory(bundle_dir)
+        prepared = build_prepared_sample(
+            record,
+            protocol,
+            sample_plan[record.sample_id],
+            bundle_dir,
+            decoded_frames,
+        )
+        prepared_samples.append(prepared)
+        index_rows.append(
+            {
+                "sample_id": prepared.sample_id,
+                "task_name": prepared.task_name,
+                "video_key": prepared.video_key,
+                "annotation_id": prepared.annotation_id,
+                "manifest_path": str((bundle_dir / "manifest.json").relative_to(samples_root.parent)),
+                "frame_count": len(prepared.sampled_frames_original),
+            }
+        )
+    return prepared_samples, index_rows
+
+
 def build_protocol_cache(
     records: list[SampleRecord],
     protocol: ProtocolSpec,
     prepared_root: Path,
     *,
     data_status: dict[str, Any],
+    workers: int = 1,
 ) -> dict[str, Any]:
+    if workers < 1:
+        raise ValueError("prepare-data workers must be >= 1")
     protocol_root = ensure_directory(prepared_root / protocol.protocol_id)
     samples_root = ensure_directory(protocol_root / "samples")
     relevant_records = [
@@ -240,37 +284,26 @@ def build_protocol_cache(
     for record in relevant_records:
         grouped_records[record.source_video_path].append(record)
 
+    video_jobs = sorted(grouped_records.items(), key=lambda item: str(item[0]))
     prepared_samples: list[PreparedSample] = []
     index_rows: list[dict[str, Any]] = []
-    for video_path, video_records in grouped_records.items():
-        sample_plan = {
-            record.sample_id: sample_frames_for_sample(record, protocol)
-            for record in video_records
-        }
-        union_frames = sorted({frame for frames in sample_plan.values() for frame in frames})
-        decoded_frames = decode_selected_frames(video_path, union_frames)
-        for record in video_records:
-            bundle_dir = sample_bundle_dir(samples_root, record.video_key, record.annotation_id)
-            ensure_directory(bundle_dir)
-            prepared = build_prepared_sample(
-                record,
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(
+                _build_video_cache_entries,
+                video_path,
+                video_records,
                 protocol,
-                sample_plan[record.sample_id],
-                bundle_dir,
-                decoded_frames,
+                samples_root,
             )
-            prepared_samples.append(prepared)
-            index_rows.append(
-                {
-                    "sample_id": prepared.sample_id,
-                    "task_name": prepared.task_name,
-                    "video_key": prepared.video_key,
-                    "annotation_id": prepared.annotation_id,
-                    "manifest_path": str((bundle_dir / "manifest.json").relative_to(protocol_root)),
-                    "frame_count": len(prepared.sampled_frames_original),
-                }
-            )
+            for video_path, video_records in video_jobs
+        ]
+        for future in futures:
+            video_prepared_samples, video_index_rows = future.result()
+            prepared_samples.extend(video_prepared_samples)
+            index_rows.extend(video_index_rows)
 
+    prepared_samples.sort(key=lambda sample: sample.sample_id)
     index_rows.sort(key=lambda row: row["sample_id"])
     write_jsonl(protocol_root / "index.jsonl", index_rows)
     stats_payload = _protocol_stats(prepared_samples)
@@ -303,7 +336,11 @@ def build_prepared_data(
     data_root: Path,
     prepared_root: Path,
     protocol_ids: list[str],
+    *,
+    workers: int = 1,
 ) -> list[dict[str, Any]]:
+    if workers < 1:
+        raise ValueError("prepare-data workers must be >= 1")
     scan_report = scan_dataset_report(data_root)
     if scan_report.issues:
         issue_text = "\n".join(scan_report.issues[:50])
@@ -321,6 +358,7 @@ def build_prepared_data(
                 protocol,
                 prepared_root,
                 data_status=data_status,
+                workers=workers,
             )
         )
     return results
