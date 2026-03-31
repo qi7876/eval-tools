@@ -56,6 +56,19 @@ def build_fixture_with_unsupported_task(tmp_path: Path) -> Path:
     return dataset_root
 
 
+def build_fixture_with_q_window_end_equal_total_frames(tmp_path: Path) -> Path:
+    dataset_root = tmp_path / "dataset"
+    shutil.copytree(FIXTURE_ROOT, dataset_root)
+    annotation_path = dataset_root / "TestSport" / "TestEvent" / "1.json"
+    payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+    for annotation in payload["annotations"]:
+        if annotation["annotation_id"] == "2":
+            annotation["Q_window_frame"] = [100, payload["video_metadata"]["total_frames"]]
+            break
+    annotation_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return dataset_root
+
+
 def _evaluation_record(
     sample_id: str,
     task_name: str,
@@ -143,6 +156,33 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
     chain_summary = summarize_experiment_b(pairs, evaluation["records_by_sample_id"])
     assert chain_summary["chain_success"] == 1.0
     assert chain_summary["chain_success_wo_track"] == 1.0
+
+
+def test_prepare_data_clips_q_window_end_equal_to_total_frames(monkeypatch, tmp_path):
+    dataset_root = build_fixture_with_q_window_end_equal_total_frames(tmp_path)
+    requested_frame_indices: list[int] = []
+
+    def recording_decode(video_path: Path, frame_indices: list[int]):
+        del video_path
+        requested_frame_indices.extend(frame_indices)
+        assert max(frame_indices) <= 499
+        return fake_decode_selected_frames(Path("unused.mp4"), frame_indices)
+
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        recording_decode,
+    )
+
+    prepared_root = tmp_path / "prepared"
+    build_prepared_data(dataset_root, prepared_root, ["main"])
+
+    assert requested_frame_indices
+    assert 500 not in requested_frame_indices
+
+    prepared_samples = load_prepared_samples(prepared_root, "main")
+    long_window_sample = next(sample for sample in prepared_samples if sample.annotation_id == "2")
+    assert long_window_sample.sampled_frames_original[-1] == 499
+    assert len(long_window_sample.sampled_frames_original) == 64
 
 
 def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():

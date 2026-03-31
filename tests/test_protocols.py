@@ -10,6 +10,7 @@ from omnichain_eval.schema import SampleRecord, VideoMetadata
 
 
 def build_sample(task_name: str, **kwargs) -> SampleRecord:
+    total_frames = kwargs.pop("total_frames", 1000)
     return SampleRecord(
         sample_id="video#1",
         annotation_id="1",
@@ -19,7 +20,7 @@ def build_sample(task_name: str, **kwargs) -> SampleRecord:
         question_text="test",
         source_annotation_path=Path("video.json"),
         source_video_path=Path("video.mp4"),
-        video_metadata=VideoMetadata(10.0, 10, 1000, (1920, 1080)),
+        video_metadata=VideoMetadata(10.0, 10, total_frames, (1920, 1080)),
         raw_annotation={},
         reference_payload={"text": "answer"},
         **kwargs,
@@ -42,6 +43,22 @@ def test_main_long_window_sampling_has_budget():
     assert frames[-1] == 999
 
 
+def test_main_long_window_sampling_clips_query_end_to_last_frame():
+    sample = build_sample("Score_Prediction", q_window=(0, 1000))
+    frames = sample_frames_for_sample(sample, MAIN_PROTOCOL)
+    assert len(frames) == 64
+    assert frames[0] == 0
+    assert frames[-1] == 999
+    assert 1000 not in frames
+
+
+def test_main_short_window_sampling_clips_query_end_to_last_frame():
+    sample = build_sample("Scoreboard_Multiple", q_window=(900, 1000))
+    frames = sample_frames_for_sample(sample, MAIN_PROTOCOL)
+    assert frames[-1] == 999
+    assert 1000 not in frames
+
+
 def test_experiment_d_recent_history_sampling():
     sample = build_sample("Spatial_Imagination", q_window=(100, 450))
     protocol = get_protocol("expd_fps_32s_4fps")
@@ -49,6 +66,14 @@ def test_experiment_d_recent_history_sampling():
     assert frames[-1] == 450
     assert len(frames) <= 128
     assert len(frames) > 100
+
+
+def test_experiment_d_recent_history_sampling_clips_query_end_to_last_frame():
+    sample = build_sample("Spatial_Imagination", q_window=(900, 1000))
+    protocol = get_protocol("expd_fps_32s_4fps")
+    frames = sample_frames_for_sample(sample, protocol)
+    assert frames[-1] == 999
+    assert 1000 not in frames
 
 
 def test_original_interval_to_sampled_interval():

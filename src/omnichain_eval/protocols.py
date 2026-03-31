@@ -118,6 +118,14 @@ def _remove_duplicates(values: Iterable[int]) -> list[int]:
     return deduped
 
 
+def _clip_closed_interval(start: int, end: int, total_frames: int) -> tuple[int, int]:
+    clipped_start = clip_index(start, total_frames)
+    clipped_end = clip_index(end, total_frames)
+    if clipped_start > clipped_end:
+        clipped_start, clipped_end = clipped_end, clipped_start
+    return clipped_start, clipped_end
+
+
 def uniform_sample_closed_interval(start: int, end: int, budget: int) -> list[int]:
     if budget <= 1 or start == end:
         return [start]
@@ -175,7 +183,11 @@ def sample_frames_for_sample(sample: SampleRecord, protocol: ProtocolSpec) -> li
         )
     if sample.q_window is None:
         raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
-    q_start, q_end = sample.q_window
+    q_start, q_end = _clip_closed_interval(
+        sample.q_window[0],
+        sample.q_window[1],
+        total_frames,
+    )
     if protocol.strategy == "main":
         interval_length = q_end - q_start + 1
         if interval_length <= SHORT_WINDOW_FRAMES:
