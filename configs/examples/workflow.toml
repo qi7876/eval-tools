@@ -5,16 +5,4 @@ data_root = "/data/public_data/mllmbenchmark"
 data_root = "/data/public_data/mllmbenchmark"
 out = "../../artifacts/chain_pairs.jsonl"
 
-[prepare_data]
-data_root = "/data/public_data/mllmbenchmark"
-prepared_root = "/data/public_data/mllmbenchmark_prepared"
-workers = 8
-protocols = [
-  "main",
-  "expd_window_16s_2fps",
-  "expd_window_32s_2fps",
-  "expd_window_64s_2fps",
-  "expd_fps_32s_1fps",
-  "expd_fps_32s_2fps",
-  "expd_fps_32s_4fps",
-]
+# Use `prepare_main.toml` or `prepare_experiment_d.toml` for `prepare-data`.

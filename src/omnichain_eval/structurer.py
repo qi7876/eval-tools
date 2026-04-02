@@ -101,11 +101,16 @@ class OpenAIStructurerBackend(StructurerBackend):
         base_url: str,
         api_key: str,
         model: str = STRUCTURER_MODEL_DEFAULT,
+        temperature: float = 0.0,
         extra_body: dict[str, Any] | None = None,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.model = model
-        self.extra_body = dict(extra_body or {})
+        self.temperature = float(temperature)
+        self.extra_body = {
+            "enable_thinking": False,
+            **dict(extra_body or {}),
+        }
 
     def _response_texts(self, completion: Any) -> list[str]:
         responses: list[str] = []
@@ -134,6 +139,7 @@ class OpenAIStructurerBackend(StructurerBackend):
             messages=[
                 {"role": "user", "content": rendered_prompt.prompt_text},
             ],
+            temperature=self.temperature,
             extra_body=self.extra_body or None,
         )
         return self._response_texts(completion)

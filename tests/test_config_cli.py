@@ -4,6 +4,7 @@ import pytest
 
 from omnichain_eval.cli import main
 from omnichain_eval.config import load_prepare_data_config, load_run_eval_config
+from omnichain_eval.protocols import ALL_PROTOCOLS, EXPERIMENT_D_PROTOCOLS
 
 
 def test_load_run_eval_config_resolves_paths_and_judge_options(tmp_path):
@@ -30,11 +31,12 @@ prompt_root = "../prompts/judge_v1"
 base_url = "http://judge.example/v1"
 api_key_env = "CUSTOM_JUDGE_KEY"
 model = "judge-model"
+temperature = 0
 invalid_json_retries = 3
 concurrency = 2
 
-[judge.extra_body.thinking]
-type = "disabled"
+[judge.extra_body]
+provider_hint = "judge"
 
 [structurer]
 backend = "openai"
@@ -43,11 +45,12 @@ oracle_prompt_root = "../prompts/structurer_oracle_v1"
 base_url = "http://structurer.example/v1"
 api_key_env = "CUSTOM_STRUCTURER_KEY"
 model = "structurer-model"
+temperature = 0
 invalid_json_retries = 4
 concurrency = 5
 
-[structurer.extra_body.thinking]
-type = "disabled"
+[structurer.extra_body]
+provider_hint = "structurer"
 """.strip(),
         encoding="utf-8",
     )
@@ -69,7 +72,11 @@ type = "disabled"
     assert config.judge.base_url == "http://judge.example/v1"
     assert config.judge.api_key_env == "CUSTOM_JUDGE_KEY"
     assert config.judge.model == "judge-model"
-    assert config.judge.extra_body == {"thinking": {"type": "disabled"}}
+    assert config.judge.temperature == 0.0
+    assert config.judge.extra_body == {
+        "enable_thinking": False,
+        "provider_hint": "judge",
+    }
     assert config.judge.invalid_json_retries == 3
     assert config.judge.concurrency == 2
     assert config.structurer.backend == "openai"
@@ -78,9 +85,68 @@ type = "disabled"
     assert config.structurer.base_url == "http://structurer.example/v1"
     assert config.structurer.api_key_env == "CUSTOM_STRUCTURER_KEY"
     assert config.structurer.model == "structurer-model"
-    assert config.structurer.extra_body == {"thinking": {"type": "disabled"}}
+    assert config.structurer.temperature == 0.0
+    assert config.structurer.extra_body == {
+        "enable_thinking": False,
+        "provider_hint": "structurer",
+    }
     assert config.structurer.invalid_json_retries == 4
     assert config.structurer.concurrency == 5
+
+
+def test_load_run_eval_config_uses_qwen_defaults_for_openai_sections(tmp_path):
+    config_path = tmp_path / "defaults.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+prompt_root = "prompts/benchmark_v1"
+adapter = "mock"
+
+[judge]
+prompt_root = "prompts/judge_v1"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_run_eval_config(config_path)
+
+    assert config.judge.model == "qwen3.5-397b-a17b"
+    assert config.judge.temperature == 0.0
+    assert config.judge.extra_body == {"enable_thinking": False}
+    assert config.structurer.model == "qwen3.5-397b-a17b"
+    assert config.structurer.temperature == 0.0
+    assert config.structurer.extra_body == {"enable_thinking": False}
+
+
+def test_load_run_eval_config_rejects_non_numeric_temperature(tmp_path):
+    config_path = tmp_path / "invalid_temperature.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "main"
+prompt_root = "prompts/benchmark_v1"
+adapter = "mock"
+
+[judge]
+prompt_root = "prompts/judge_v1"
+temperature = "cold"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=r"\[judge\]\.temperature must be a number"):
+        load_run_eval_config(config_path)
 
 
 def test_load_run_eval_config_requires_adapter(tmp_path):
@@ -288,3 +354,34 @@ workers = 0
 
     with pytest.raises(ValueError, match=r"\[prepare_data\]\.workers must be >= 1"):
         load_prepare_data_config(config_path)
+
+
+EXAMPLE_CONFIG_ROOT = Path(__file__).resolve().parent.parent / "configs" / "examples"
+
+
+def test_example_prepare_configs_split_main_and_experiment_d():
+    main_config = load_prepare_data_config(EXAMPLE_CONFIG_ROOT / "prepare_main.toml")
+    experiment_d_config = load_prepare_data_config(
+        EXAMPLE_CONFIG_ROOT / "prepare_experiment_d.toml"
+    )
+
+    assert main_config.protocols == ["main"]
+    assert set(experiment_d_config.protocols) == set(EXPERIMENT_D_PROTOCOLS)
+    assert main_config.prepared_root == experiment_d_config.prepared_root
+    assert main_config.data_root == experiment_d_config.data_root
+
+
+def test_example_run_eval_configs_cover_all_protocols_with_dashscope_settings():
+    for protocol_id in sorted(ALL_PROTOCOLS):
+        config_path = EXAMPLE_CONFIG_ROOT / f"run_eval_{protocol_id}.toml"
+        assert config_path.exists(), f"missing example config for protocol {protocol_id}"
+        config = load_run_eval_config(config_path)
+
+        assert config.protocol == protocol_id
+        assert config.chain_manifest == (
+            (EXAMPLE_CONFIG_ROOT / "../../artifacts/chain_pairs.jsonl").resolve()
+        )
+        assert config.judge.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert config.judge.api_key_env == "DASHSCOPE_API_KEY"
+        assert config.structurer.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        assert config.structurer.api_key_env == "DASHSCOPE_API_KEY"

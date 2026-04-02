@@ -1,9 +1,9 @@
 [run_eval]
 prepared_root = "/data/public_data/mllmbenchmark_prepared"
-protocol = "expd_window_32s_2fps"
+protocol = "expd_window_64s_2fps"
 artifacts_root = "../../artifacts/runs"
 prompt_root = "../../prompts/benchmark_v1"
-run_name = "baseline-expd-window-32s-2fps"
+run_name = "baseline-expd-window-64s-2fps"
 model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 chain_manifest = "../../artifacts/chain_pairs.jsonl"

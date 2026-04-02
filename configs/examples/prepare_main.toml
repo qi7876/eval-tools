@@ -1,0 +1,5 @@
+[prepare_data]
+data_root = "/data/public_data/mllmbenchmark"
+prepared_root = "/data/public_data/mllmbenchmark_prepared"
+workers = 8
+protocols = ["main"]

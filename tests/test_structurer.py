@@ -392,7 +392,8 @@ def test_openai_structurer_forwards_extra_body(monkeypatch):
     backend = OpenAIStructurerBackend(
         base_url="http://structurer.example/v1",
         api_key="dummy",
-        extra_body={"thinking": {"type": "disabled"}},
+        temperature=0,
+        extra_body={"provider_hint": "structurer"},
     )
     responses = backend.complete(
         sample=_sample(),
@@ -405,4 +406,8 @@ def test_openai_structurer_forwards_extra_body(monkeypatch):
     )
 
     assert responses == ['{"text": "Team A is leading."}']
-    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert captured["temperature"] == 0.0
+    assert captured["extra_body"] == {
+        "enable_thinking": False,
+        "provider_hint": "structurer",
+    }

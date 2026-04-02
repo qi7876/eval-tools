@@ -335,7 +335,8 @@ def test_openai_judge_forwards_extra_body(monkeypatch):
         base_url="http://judge.example/v1",
         api_key="dummy",
         prompt_root=JUDGE_PROMPT_ROOT,
-        extra_body={"thinking": {"type": "disabled"}},
+        temperature=0,
+        extra_body={"provider_hint": "judge"},
     )
 
     decision = judge_client.judge(
@@ -346,4 +347,8 @@ def test_openai_judge_forwards_extra_body(monkeypatch):
     )
 
     assert decision.final_pass == 1
-    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert captured["temperature"] == 0.0
+    assert captured["extra_body"] == {
+        "enable_thinking": False,
+        "provider_hint": "judge",
+    }

@@ -154,9 +154,17 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 
 仓库内提供了这些示例配置：
 
-- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml)：数据校验、chain manifest、prepare-data
-- [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)：在线 adapter 评测
-- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml)：Experiment D 独立配置示例
+- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml)：数据校验与 chain manifest 生成
+- [configs/examples/prepare_main.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_main.toml)：只构建 `main` 协议缓存
+- [configs/examples/prepare_experiment_d.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_experiment_d.toml)：构建全部 Experiment D 协议缓存
+- [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)：mock smoke test 评测
+- [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml)：`main` 协议在线评测示例
+- [configs/examples/run_eval_expd_window_16s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_16s_2fps.toml)：`expd_window_16s_2fps` 在线评测示例
+- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml)：`expd_window_32s_2fps` 在线评测示例
+- [configs/examples/run_eval_expd_window_64s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_64s_2fps.toml)：`expd_window_64s_2fps` 在线评测示例
+- [configs/examples/run_eval_expd_fps_32s_1fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_1fps.toml)：`expd_fps_32s_1fps` 在线评测示例
+- [configs/examples/run_eval_expd_fps_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_2fps.toml)：`expd_fps_32s_2fps` 在线评测示例
+- [configs/examples/run_eval_expd_fps_32s_4fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_4fps.toml)：`expd_fps_32s_4fps` 在线评测示例
 
 支持的顶层 section：
 
@@ -181,18 +189,26 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
+
+[structurer.extra_body]
+enable_thinking = false
 
 [judge]
 backend = "openai"
 prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
+
+[judge.extra_body]
+enable_thinking = false
 ```
 
 路径规则：
@@ -281,25 +297,24 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 你应该先构建 prepared data，然后后续所有 baseline 模型都只复用 prepared data，不再重复从原视频采样。
 
-### 只构建主协议
+### 构建主协议缓存
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   prepare-data \
-  --config configs/examples/workflow.toml
+  --config configs/examples/prepare_main.toml
 ```
 
-上面的示例配置已经在 `[prepare_data].protocols` 中放入了 `main` 和当前所有 Experiment D 固定预算协议。
+### 构建全部 Experiment D 缓存
 
-如果你只想给单个实验准备缓存，建议单独新建一个 TOML，例如：
-
-```toml
-[prepare_data]
-data_root = "/data/public_data/mllmbenchmark"
-prepared_root = "/data/public_data/mllmbenchmark_prepared"
-workers = 8
-protocols = ["main"]
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
+  prepare-data \
+  --config configs/examples/prepare_experiment_d.toml
 ```
+
+现在仓库内的示例配置已经明确把 `main` 和 Experiment D 的缓存构建拆开了。
+这两个 prepare 示例依然共用同一个 `prepared_root`，因此不同协议的缓存仍会写入同一棵 prepared-data 目录。
 
 这个命令会：
 
@@ -663,20 +678,28 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 [judge]
 backend = "openai"
 prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
+
+[judge.extra_body]
+enable_thinking = false
 
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer.extra_body]
+enable_thinking = false
 ```
 
 ## Structurer 配置
@@ -691,18 +714,20 @@ Structurer 的配置写在 `run-eval` 所使用 TOML 的 `[structurer]` section 
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
 
-[structurer.extra_body.thinking]
-type = "disabled"
+[structurer.extra_body]
+enable_thinking = false
 ```
 
-`[structurer].extra_body` 会被原样透传到 OpenAI-compatible 请求体里。像 Kimi 这种 provider-specific 的额外字段，就放在这里。
-框架不再暴露可配置的 `[structurer].temperature`；对于 Kimi non-thinking，这个温度由服务端固定，不应该由客户端传入。
+`[structurer].extra_body` 会被原样透传到 OpenAI-compatible 请求体里。
+`[structurer].temperature` 是可配置的；默认值是 `0`。
+如果你不手动覆盖，框架默认会使用 `model = "qwen3.5-397b-a17b"`、`temperature = 0` 和 `extra_body.enable_thinking = false`。
 
 如果只是本地 smoke test，也可以不调用外部 structurer API，直接使用：
 
@@ -742,41 +767,28 @@ Judge 的配置写在 `run-eval` 所使用 TOML 的 `[judge]` section 里。
 [judge]
 backend = "openai"
 prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
 
-[judge.extra_body.thinking]
-type = "disabled"
+[judge.extra_body]
+enable_thinking = false
 ```
 
-`[judge].extra_body` 也会原样进入请求体。对于 `kimi-k2.5 non-thinking`，可以这样写：
-
-```toml
-[judge]
-backend = "openai"
-prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
-invalid_json_retries = 2
-concurrency = 1
-
-[judge.extra_body.thinking]
-type = "disabled"
-```
-
-框架不再暴露可配置的 `[judge].temperature`；对于 Kimi non-thinking，这个温度由服务端固定，不应该由客户端传入。
+`[judge].extra_body` 也会原样进入请求体。
+`[judge].temperature` 是可配置的；默认值是 `0`。
+如果你不手动覆盖，框架默认会使用 `model = "qwen3.5-397b-a17b"`、`temperature = 0` 和 `extra_body.enable_thinking = false`。
 
 然后只在环境变量里提供密钥：
 
 ```bash
-export KIMI_API_KEY="your-api-key"
+export DASHSCOPE_API_KEY="your-api-key"
 ```
 
-当然，你也可以把 `api_key` 直接写进 TOML，但更推荐用 `api_key_env`。如果 judge 和 structurer 都走 Kimi，它们可以共用同一个 `KIMI_API_KEY`。
+当然，你也可以把 `api_key` 直接写进 TOML，但更推荐用 `api_key_env`。如果 judge 和 structurer 都走 DashScope，它们可以共用同一个 `DASHSCOPE_API_KEY`。
 
 如果只是本地 smoke test，不想真的调 judge API，可以把 backend 改成：
 
@@ -992,14 +1004,21 @@ UV_CACHE_DIR=/tmp/uv-cache uv run pytest
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval validate-data --config configs/examples/workflow.toml
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval build-chain-manifest --config configs/examples/workflow.toml
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_main.toml
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
-### 预构建全部固定预算缓存
+### 预构建全部 Experiment D 固定预算缓存
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
+```
+
+### 同时构建 main 与 Experiment D 缓存
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_main.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
 ```
 
 ## 当前限制

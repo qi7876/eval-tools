@@ -32,7 +32,10 @@ The adapter must be minimal. The framework already owns prompt construction, cha
 - [src/omnichain_eval/cli.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/cli.py)
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)
+- [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml)
 - [README.md](/home/qi7876/dev/eval-tools/README.md)
+
+For live evaluation examples, the repository now ships one `run_eval_<protocol>.toml` file per supported protocol under `configs/examples/`.
 
 ## Current Framework Contract
 
@@ -330,24 +333,26 @@ enable_oracle_track = false
 [structurer]
 backend = "openai"
 prompt_root = "../../prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 
-[structurer.extra_body.thinking]
-type = "disabled"
+[structurer.extra_body]
+enable_thinking = false
 
 [judge]
 backend = "openai"
 prompt_root = "../../prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 
-[judge.extra_body.thinking]
-type = "disabled"
+[judge.extra_body]
+enable_thinking = false
 ```
 
 The framework owns structurer and judge configuration. Do not try to push model runtime knobs into this TOML unless the repository explicitly decides to support that later.

@@ -95,6 +95,7 @@ def _judge_client_from_config(judge_config: JudgeConfig):
         api_key=api_key,
         prompt_root=judge_config.prompt_root,
         model=judge_config.model,
+        temperature=judge_config.temperature,
         extra_body=judge_config.extra_body,
         invalid_json_retries=judge_config.invalid_json_retries,
     )
@@ -121,6 +122,7 @@ def _structurer_service_from_config(structurer_config: StructurerConfig) -> Stru
             base_url=base_url,
             api_key=api_key,
             model=structurer_config.model,
+            temperature=structurer_config.temperature,
             extra_body=structurer_config.extra_body,
         )
     return StructurerService(

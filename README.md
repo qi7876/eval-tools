@@ -148,9 +148,17 @@ This makes it practical to maintain one config per experiment, per protocol, or 
 
 Example config files shipped with the repository:
 
-- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate, chain-manifest, prepare-data
-- [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml): live adapter evaluation
-- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml): a separate Experiment D run config
+- [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate-data and build-chain-manifest
+- [configs/examples/prepare_main.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_main.toml): prepare-data for `main`
+- [configs/examples/prepare_experiment_d.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_experiment_d.toml): prepare-data for all Experiment D protocols
+- [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml): mock smoke-test evaluation
+- [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml): live `run-eval` example for `main`
+- [configs/examples/run_eval_expd_window_16s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_16s_2fps.toml): live `run-eval` example for `expd_window_16s_2fps`
+- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml): live `run-eval` example for `expd_window_32s_2fps`
+- [configs/examples/run_eval_expd_window_64s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_64s_2fps.toml): live `run-eval` example for `expd_window_64s_2fps`
+- [configs/examples/run_eval_expd_fps_32s_1fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_1fps.toml): live `run-eval` example for `expd_fps_32s_1fps`
+- [configs/examples/run_eval_expd_fps_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_2fps.toml): live `run-eval` example for `expd_fps_32s_2fps`
+- [configs/examples/run_eval_expd_fps_32s_4fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_4fps.toml): live `run-eval` example for `expd_fps_32s_4fps`
 
 Supported top-level sections:
 
@@ -175,18 +183,26 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
+
+[structurer.extra_body]
+enable_thinking = false
 
 [judge]
 backend = "openai"
 prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
+
+[judge.extra_body]
+enable_thinking = false
 ```
 
 Path rules:
@@ -259,25 +275,24 @@ Output schema:
 
 ### 3. Prepare reusable test data
 
-Main protocol only:
+Build the main protocol cache:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   prepare-data \
-  --config configs/examples/workflow.toml
+  --config configs/examples/prepare_main.toml
 ```
 
-The example config already includes `main` plus all current Experiment D fixed-budget ablations inside `[prepare_data].protocols`.
+Build all Experiment D caches:
 
-If you want a dedicated config just for one protocol, create a separate TOML file and keep only the protocol ids you need:
-
-```toml
-[prepare_data]
-data_root = "/data/public_data/mllmbenchmark"
-prepared_root = "/data/public_data/mllmbenchmark_prepared"
-workers = 8
-protocols = ["main"]
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
+  prepare-data \
+  --config configs/examples/prepare_experiment_d.toml
 ```
+
+The shipped examples intentionally separate `main` and Experiment D cache generation.
+Both prepare configs point to the same `prepared_root`, so the generated caches still coexist under one prepared-data tree.
 
 What it does:
 
@@ -620,20 +635,28 @@ adapter = "my_package.my_adapter:MyVideoAdapter"
 [judge]
 backend = "openai"
 prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
+
+[judge.extra_body]
+enable_thinking = false
 
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
+
+[structurer.extra_body]
+enable_thinking = false
 ```
 
 ## Structurer Configuration
@@ -648,18 +671,20 @@ Typical OpenAI-compatible configuration:
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
 
-[structurer.extra_body.thinking]
-type = "disabled"
+[structurer.extra_body]
+enable_thinking = false
 ```
 
-`[structurer].extra_body` is passed through directly to the OpenAI-compatible request body. This is the place to put provider-specific options such as Kimi's thinking control.
-The framework does not expose a configurable `[structurer].temperature`; for Kimi non-thinking, temperature is fixed provider-side and should not be sent.
+`[structurer].extra_body` is passed through directly to the OpenAI-compatible request body.
+`[structurer].temperature` is configurable; the default is `0`.
+If you do not override them, the framework defaults to `model = "qwen3.5-397b-a17b"`, `temperature = 0`, and `extra_body.enable_thinking = false`.
 
 For local smoke tests you can skip the external structurer API and use:
 
@@ -699,41 +724,28 @@ Typical OpenAI-compatible configuration:
 [judge]
 backend = "openai"
 prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
+base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key_env = "DASHSCOPE_API_KEY"
+model = "qwen3.5-397b-a17b"
+temperature = 0
 invalid_json_retries = 2
 concurrency = 1
 
-[judge.extra_body.thinking]
-type = "disabled"
+[judge.extra_body]
+enable_thinking = false
 ```
 
-`[judge].extra_body` is also forwarded unchanged into the request body. For Kimi `kimi-k2.5 non-thinking`, configure:
-
-```toml
-[judge]
-backend = "openai"
-prompt_root = "prompts/judge_v1"
-base_url = "https://api.moonshot.cn/v1"
-api_key_env = "KIMI_API_KEY"
-model = "kimi-k2.5"
-invalid_json_retries = 2
-concurrency = 1
-
-[judge.extra_body.thinking]
-type = "disabled"
-```
-
-The framework does not expose a configurable `[judge].temperature`; for Kimi non-thinking, temperature is fixed provider-side and should not be sent.
+`[judge].extra_body` is also forwarded unchanged into the request body.
+`[judge].temperature` is configurable; the default is `0`.
+If you do not override them, the framework defaults to `model = "qwen3.5-397b-a17b"`, `temperature = 0`, and `extra_body.enable_thinking = false`.
 
 Then export only the secret:
 
 ```bash
-export KIMI_API_KEY="your-api-key"
+export DASHSCOPE_API_KEY="your-api-key"
 ```
 
-You can use `[judge].api_key` directly in TOML, but `api_key_env` is usually cleaner. When both judge and structurer use Kimi, they can share the same `KIMI_API_KEY`.
+You can use `[judge].api_key` directly in TOML, but `api_key_env` is usually cleaner. When both judge and structurer use DashScope, they can share the same `DASHSCOPE_API_KEY`.
 
 For local smoke tests you can avoid external judge calls by changing the backend:
 
@@ -949,14 +961,21 @@ The test suite currently covers:
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval validate-data --config configs/examples/workflow.toml
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval build-chain-manifest --config configs/examples/workflow.toml
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_main.toml
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
-### Build all fixed-budget caches in advance
+### Build all Experiment D fixed-budget caches in advance
 
 ```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/workflow.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
+```
+
+### Build both main and Experiment D caches
+
+```bash
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_main.toml
+UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
 ```
 
 ## Current Limitations

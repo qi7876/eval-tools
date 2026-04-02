@@ -11,6 +11,28 @@ from typing import Any
 from .constants import JUDGE_MODEL_DEFAULT, STRUCTURER_MODEL_DEFAULT
 
 
+def _default_openai_extra_body() -> dict[str, Any]:
+    return {"enable_thinking": False}
+
+
+def _merged_openai_extra_body(value: Any, *, section_name: str) -> dict[str, Any]:
+    if value is None:
+        return _default_openai_extra_body()
+    if not isinstance(value, dict):
+        raise ValueError(f"[{section_name}].extra_body must be a table")
+    return {
+        **_default_openai_extra_body(),
+        **value,
+    }
+
+
+def _coerce_optional_float(value: Any, *, field_name: str) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+
+
 def _load_toml(path: Path) -> tuple[dict[str, Any], Path]:
     payload = tomllib.loads(path.read_text(encoding="utf-8"))
     return payload, path.parent
@@ -67,7 +89,8 @@ class JudgeConfig:
     api_key: str | None = None
     api_key_env: str = "EVAL_JUDGE_API_KEY"
     model: str = JUDGE_MODEL_DEFAULT
-    extra_body: dict[str, Any] = field(default_factory=dict)
+    temperature: float = 0.0
+    extra_body: dict[str, Any] = field(default_factory=_default_openai_extra_body)
     invalid_json_retries: int = 0
     concurrency: int = 1
 
@@ -89,7 +112,8 @@ class StructurerConfig:
     api_key: str | None = None
     api_key_env: str = "EVAL_STRUCTURER_API_KEY"
     model: str = STRUCTURER_MODEL_DEFAULT
-    extra_body: dict[str, Any] = field(default_factory=dict)
+    temperature: float = 0.0
+    extra_body: dict[str, Any] = field(default_factory=_default_openai_extra_body)
     invalid_json_retries: int = 0
     concurrency: int = 1
     prompt_root: Path | None = None
@@ -166,9 +190,6 @@ def load_prepare_data_config(path: Path) -> PrepareDataConfig:
 
 def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
     table = _table(payload, "judge")
-    extra_body = table.get("extra_body", {})
-    if not isinstance(extra_body, dict):
-        raise ValueError("[judge].extra_body must be a table")
     config = JudgeConfig(
         backend=str(table.get("backend", "openai")),
         prompt_root=_resolve_path(base_dir, table.get("prompt_root")),
@@ -176,7 +197,11 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
         api_key=table.get("api_key"),
         api_key_env=str(table.get("api_key_env", "EVAL_JUDGE_API_KEY")),
         model=str(table.get("model", JUDGE_MODEL_DEFAULT)),
-        extra_body=extra_body,
+        temperature=_coerce_optional_float(
+            table.get("temperature", 0.0),
+            field_name="[judge].temperature",
+        ),
+        extra_body=_merged_openai_extra_body(table.get("extra_body"), section_name="judge"),
         invalid_json_retries=int(table.get("invalid_json_retries", 0)),
         concurrency=int(table.get("concurrency", 1)),
     )
@@ -193,16 +218,20 @@ def _load_judge_config(base_dir: Path, payload: dict[str, Any]) -> JudgeConfig:
 
 def _load_structurer_config(base_dir: Path, payload: dict[str, Any]) -> StructurerConfig:
     table = _table(payload, "structurer")
-    extra_body = table.get("extra_body", {})
-    if not isinstance(extra_body, dict):
-        raise ValueError("[structurer].extra_body must be a table")
     config = StructurerConfig(
         backend=str(table.get("backend", "openai")),
         base_url=table.get("base_url"),
         api_key=table.get("api_key"),
         api_key_env=str(table.get("api_key_env", "EVAL_STRUCTURER_API_KEY")),
         model=str(table.get("model", STRUCTURER_MODEL_DEFAULT)),
-        extra_body=extra_body,
+        temperature=_coerce_optional_float(
+            table.get("temperature", 0.0),
+            field_name="[structurer].temperature",
+        ),
+        extra_body=_merged_openai_extra_body(
+            table.get("extra_body"),
+            section_name="structurer",
+        ),
         invalid_json_retries=int(table.get("invalid_json_retries", 0)),
         concurrency=int(table.get("concurrency", 1)),
         prompt_root=_resolve_path(base_dir, table.get("prompt_root")),

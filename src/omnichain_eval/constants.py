@@ -84,8 +84,8 @@ STG_UPSTREAM_TASKS = {
     TASK_STG,
 }
 
-STRUCTURER_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
-JUDGE_MODEL_DEFAULT = "deepseek-ai/DeepSeek-V3.2"
+STRUCTURER_MODEL_DEFAULT = "qwen3.5-397b-a17b"
+JUDGE_MODEL_DEFAULT = "qwen3.5-397b-a17b"
 JUDGE_JSON_KEYS = {
     "correctness",
     "completeness",

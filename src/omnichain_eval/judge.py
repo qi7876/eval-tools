@@ -168,13 +168,18 @@ class OpenAIJudgeClient(JudgeClient):
         api_key: str,
         prompt_root: Path,
         model: str = JUDGE_MODEL_DEFAULT,
+        temperature: float = 0.0,
         extra_body: dict[str, Any] | None = None,
         invalid_json_retries: int = 0,
     ) -> None:
         self.client = OpenAI(base_url=base_url, api_key=api_key)
         self.prompt_pack = load_judge_prompt_pack(prompt_root)
         self.model = model
-        self.extra_body = dict(extra_body or {})
+        self.temperature = float(temperature)
+        self.extra_body = {
+            "enable_thinking": False,
+            **dict(extra_body or {}),
+        }
         self.invalid_json_retries = invalid_json_retries
 
     @classmethod
@@ -182,6 +187,7 @@ class OpenAIJudgeClient(JudgeClient):
         cls,
         *,
         prompt_root: Path,
+        temperature: float = 0.0,
         extra_body: dict[str, Any] | None = None,
         invalid_json_retries: int = 0,
     ) -> "OpenAIJudgeClient":
@@ -197,6 +203,7 @@ class OpenAIJudgeClient(JudgeClient):
             api_key=api_key,
             prompt_root=prompt_root,
             model=model,
+            temperature=temperature,
             extra_body=extra_body,
             invalid_json_retries=invalid_json_retries,
         )
@@ -288,6 +295,7 @@ class OpenAIJudgeClient(JudgeClient):
             completion = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt_text}],
+                temperature=self.temperature,
                 extra_body=self.extra_body or None,
             )
             for raw_response in self._response_texts(completion):
