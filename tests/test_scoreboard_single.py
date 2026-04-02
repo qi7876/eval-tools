@@ -68,6 +68,21 @@ def test_validate_scoreboard_single_invalid_bbox_uses_sentinel():
     }
 
 
+def test_validate_scoreboard_single_out_of_range_bbox_uses_sentinel():
+    result = validate_structured_prediction(
+        _sample(),
+        raw_output='{"text":"1-0","bbox":[10,20,1300,80]}',
+        structured_prediction={"text": "1-0", "bbox": [10, 20, 1300, 80]},
+    )
+
+    assert result.errors == []
+    assert result.warnings == ["bbox invalid; using sentinel bbox"]
+    assert result.structured_prediction == {
+        "text": "1-0",
+        "bbox": [-1.0, -1.0, -1.0, -1.0],
+    }
+
+
 def test_evaluate_scoreboard_single_sentinel_bbox_gets_zero_iou_and_fails_box():
     record = _record(
         {

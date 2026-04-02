@@ -12,4 +12,5 @@ Output requirements:
   {{output_contract}}
 - `text` should answer the question using the scoreboard content.
 - `bbox` must cover the whole scoreboard.
-- `bbox` must use `[xtl, ytl, xbr, ybr]`.
+- `bbox` must use normalized_1000 corner coordinates `[x1, y1, x2, y2]`.
+- In this coordinate system, the top-left corner of the frame is `(0, 0)` and the bottom-right corner is `(1000, 1000)`.

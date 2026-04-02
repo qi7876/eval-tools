@@ -162,6 +162,7 @@ def test_render_prompt_for_objects_spatial_uses_required_labels():
     assert "`left` / `right`" in prompt
     assert "`in front of` / `behind`" in prompt
     assert "not who is leading in the play" in prompt
+    assert "normalized_1000 coordinate system" in prompt
     assert '["Player A", "Player B"]' in prompt
     assert "The order of entries in `objects` does not matter." in prompt
 
@@ -188,6 +189,7 @@ def test_render_prompt_for_scoreboard_single_uses_whole_scoreboard_box():
     assert "one sampled video frame" in prompt
     assert "entire scoreboard" in prompt
     assert "full scoreboard" in prompt
+    assert "normalized_1000 corner coordinates" in prompt
     assert "scoreboard region" not in prompt
 
 
@@ -354,6 +356,7 @@ def test_render_oracle_prompt_uses_known_positions_wording(monkeypatch, tmp_path
 
     assert "OracleTrack" not in prompt
     assert "The target athlete's position is already known in some sampled frames." in prompt
+    assert "normalized_1000 coordinate system" in prompt
     assert "The task is still to describe that target athlete's actions over time" in prompt
     assert "You do not need to output tracking boxes." in prompt
 
@@ -396,6 +399,7 @@ def test_render_oracle_prompt_for_stg_uses_target_description_wording():
     assert "action or event involving a particular subject" in prompt
     assert "find when the described action or event happens" in prompt
     assert "identify the subject referred to by the target description" in prompt
+    assert "normalized_1000 coordinate system" in prompt
     assert "You do not need to output tracking boxes." in prompt
     assert "OracleTrack" not in prompt
     assert "Question:" not in prompt

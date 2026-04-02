@@ -218,6 +218,44 @@ def test_prepare_data_parallel_workers_preserve_deterministic_outputs(monkeypatc
     ) == read_json(prepared_root_parallel / "main" / "build_manifest.json")
 
 
+def test_prepare_data_writes_normalized_coordinate_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+
+    build_manifest = read_json(prepared_root / "main" / "build_manifest.json")
+    assert build_manifest["coordinate_system"] == "normalized_1000"
+
+    prepared_sample = load_prepared_samples(prepared_root, "main")[0]
+    assert prepared_sample.metadata["coordinate_system"] == "normalized_1000"
+    assert prepared_sample.metadata["frame_width"] > 0
+    assert prepared_sample.metadata["frame_height"] > 0
+
+
+def test_load_prepared_samples_rejects_legacy_coordinate_system(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+
+    build_manifest_path = prepared_root / "main" / "build_manifest.json"
+    build_manifest = read_json(build_manifest_path)
+    build_manifest["coordinate_system"] = "pixel"
+    build_manifest_path.write_text(json.dumps(build_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    try:
+        load_prepared_samples(prepared_root, "main")
+    except ValueError as exc:
+        assert "unsupported prepared coordinate_system" in str(exc)
+    else:  # pragma: no cover - defensive
+        raise AssertionError("expected load_prepared_samples to reject legacy coordinate system")
+
+
 def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
     pairs = [
         ChainPairRecord(

@@ -14,6 +14,7 @@ Output requirements:
 - `time_window_sampled` must use sampled-frame indices.
 - Each tracking row should localize the subject referred to by the target description.
 - Each tracking row must use `frame_sampled` as a sampled-frame index.
-- Each tracking row must use `bbox_mot` as `[left, top, width, height]`.
+- Each tracking row must use normalized_1000 `bbox_mot = [left, top, width, height]`.
+- In this coordinate system, the top-left corner of the frame is `(0, 0)` and the bottom-right corner is `(1000, 1000)`.
 - There are {{num_sampled_frames}} sampled frames in total.
 - Valid sampled frame indices are {{sampled_index_range}}.

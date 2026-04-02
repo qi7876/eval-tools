@@ -98,6 +98,26 @@ def test_validate_object_spatial_rejects_duplicate_missing_and_extra_labels():
     assert "unexpected object label: Player C" in extra.errors
 
 
+def test_validate_object_spatial_rejects_out_of_range_normalized_bbox():
+    sample = _sample()
+
+    result = validate_structured_prediction(
+        sample,
+        raw_output="{}",
+        structured_prediction={
+            "text": "right of",
+            "objects": [
+                {"label": "Player A", "bbox": [10, 20, 1300, 40]},
+                {"label": "Player B", "bbox": [50, 60, 70, 80]},
+            ],
+        },
+    )
+
+    assert (
+        "objects[0].bbox must stay within normalized_1000 range [0, 1000]" in result.errors
+    )
+
+
 def test_evaluate_object_spatial_matches_boxes_by_label():
     sample = _sample()
     record = _record(

@@ -64,11 +64,11 @@ def _output_contract(task_name: str) -> str:
     }:
         return 'Return JSON only: {"text": "..."}'
     if task_name == TASK_SCOREBOARD_SINGLE:
-        return 'Return JSON only: {"text": "...", "bbox": [xtl, ytl, xbr, ybr]}'
+        return 'Return JSON only: {"text": "...", "bbox": [x1, y1, x2, y2]}'
     if task_name == TASK_OBJECTS_SPATIAL:
         return (
             'Return JSON only: {"text": "...", "objects": [{"label": "...", "bbox": '
-            '[xtl, ytl, xbr, ybr]}, {"label": "...", "bbox": [xtl, ytl, xbr, ybr]}]}'
+            '[x1, y1, x2, y2]}, {"label": "...", "bbox": [x1, y1, x2, y2]}]}'
         )
     if task_name == TASK_CONTINUOUS_EVENTS:
         return (
@@ -143,14 +143,21 @@ def render_prompt(
 def _oracle_tracking_explanation(sample: PreparedSample) -> str:
     if sample.task_name == TASK_STG:
         return (
-            "Each row uses `frame_sampled` as a sampled-frame index and `bbox_mot` as "
-            "`[left, top, width, height]`. You only need to predict "
-            "`time_window_sampled`."
+            "Each row already gives the target subject's known location in the "
+            "normalized_1000 coordinate system, where `(0, 0)` is the top-left corner "
+            "of the frame and `(1000, 1000)` is the bottom-right corner. Each row uses "
+            "`frame_sampled` as a sampled-frame index and `bbox_mot` as "
+            "`[left, top, width, height]`. Use these known boxes only to identify the "
+            "target subject. You only need to predict `time_window_sampled`."
         )
     if sample.task_name == TASK_CONTINUOUS_ACTIONS:
         return (
-            "Each row uses `frame_sampled` as a sampled-frame index and `bbox_mot` as "
-            "`[left, top, width, height]`. You only need to describe action segments."
+            "Each row already gives the target athlete's known location in the "
+            "normalized_1000 coordinate system, where `(0, 0)` is the top-left corner "
+            "of the frame and `(1000, 1000)` is the bottom-right corner. Each row uses "
+            "`frame_sampled` as a sampled-frame index and `bbox_mot` as "
+            "`[left, top, width, height]`. Use these known boxes only to identify the "
+            "target athlete. You only need to describe action segments."
         )
     raise PromptTemplateError(f"unsupported oracle upstream task: {sample.task_name}")
 

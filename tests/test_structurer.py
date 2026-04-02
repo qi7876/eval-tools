@@ -138,8 +138,9 @@ def test_rendered_structurer_prompt_for_scoreboard_single_includes_bbox_rules():
 
     assert "Convert the raw model output into the canonical JSON schema." in rendered.prompt_text
     assert "extract the final answer" in rendered.prompt_text
-    assert "bbox = [xtl, ytl, xbr, ybr]" in rendered.prompt_text
+    assert "bbox = [x1, y1, x2, y2]" in rendered.prompt_text
     assert "bbox = [-1, -1, -1, -1]" in rendered.prompt_text
+    assert "normalized_1000 coordinate system" in rendered.prompt_text
     assert "explicit valid scoreboard bbox" in rendered.prompt_text
     assert "Question:" not in rendered.prompt_text
 
@@ -157,7 +158,8 @@ def test_rendered_structurer_prompt_for_actions_includes_tracking_rules():
 
     assert "normalize explicit interval expressions" in rendered.prompt_text
     assert "normalize explicit tracking rows or coordinate strings" in rendered.prompt_text
-    assert "`bbox_mot` must be formatted as `[left, top, width, height]`." in rendered.prompt_text
+    assert "`bbox_mot` must be formatted as normalized_1000 `[left, top, width, height]`." in rendered.prompt_text
+    assert "(1000, 1000)" in rendered.prompt_text
     assert "Question:" not in rendered.prompt_text
 
 

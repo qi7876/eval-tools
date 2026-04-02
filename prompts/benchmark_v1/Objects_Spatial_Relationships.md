@@ -15,7 +15,8 @@ Output requirements:
   - `over`: A is completely above B
   - `in front of` / `behind`: closer to or farther from the camera; this is about depth to the camera, not who is leading in the play
 - If one object occludes the other, the occluding object is in front of the occluded object.
-- Each object must be written as `{"label": "...", "bbox": [xtl, ytl, xbr, ybr]}`.
+- Each object must be written as `{"label": "...", "bbox": [x1, y1, x2, y2]}` in the normalized_1000 coordinate system.
+- In this coordinate system, the top-left corner of the frame is `(0, 0)` and the bottom-right corner is `(1000, 1000)`.
 - Use exactly these labels in `objects[].label`: {{required_object_labels_json}}.
 - Each label must refer to the corresponding object asked about in the question.
 - The order of entries in `objects` does not matter.

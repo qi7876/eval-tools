@@ -499,6 +499,9 @@ The framework then:
 
 Canonical expectations by task:
 
+- All bbox / tracking coordinates use the `normalized_1000` coordinate system.
+  The top-left corner of the frame is `(0, 0)` and the bottom-right corner is `(1000, 1000)`.
+
 - Text-only tasks:
 
 ```json
@@ -508,7 +511,7 @@ Canonical expectations by task:
 - `Scoreboard_Single`:
 
 ```json
-{"text": "...", "bbox": [xtl, ytl, xbr, ybr]}
+{"text": "...", "bbox": [x1, y1, x2, y2]}
 ```
 
 - `Objects_Spatial_Relationships`:
@@ -517,8 +520,8 @@ Canonical expectations by task:
 {
   "text": "...",
   "objects": [
-    {"label": "Player A", "bbox": [xtl, ytl, xbr, ybr]},
-    {"label": "Player B", "bbox": [xtl, ytl, xbr, ybr]}
+    {"label": "Player A", "bbox": [x1, y1, x2, y2]},
+    {"label": "Player B", "bbox": [x1, y1, x2, y2]}
   ]
 }
 ```
@@ -560,6 +563,7 @@ Canonical expectations by task:
 Important:
 
 - all temporal outputs must be in sampled-frame indices, not original video frame indices
+- all bbox / tracking coordinates must stay in the `normalized_1000` coordinate system
 - tracking boxes must use MOT format `[left, top, width, height]`
 - malformed or missing fields fail deterministically
 
@@ -590,7 +594,7 @@ class MyVideoAdapter(BaseModelAdapter):
         # Replace this block with your real model call.
         # Return the raw model answer as a string.
         if sample.task_name == "Scoreboard_Single":
-            return '{"text": "The score is 1-0.", "bbox": [100, 900, 1000, 980]}'
+            return '{"text": "The score is 1-0.", "bbox": [52, 833, 521, 907]}'
 
         return '{"text": "placeholder"}'
 ```
@@ -891,7 +895,7 @@ What the framework does:
 
 - reruns the upstream and downstream pair through the adapter
 - uses `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` as dedicated OracleTrack prompt packs
-- injects GT tracking directly into the upstream Oracle prompt body, while keeping the prompt otherwise close to the normal template
+- injects GT tracking directly into the upstream Oracle prompt body in `normalized_1000` coordinates, while keeping the prompt otherwise close to the normal template
 - tells the model that the subject has already been identified by GT tracking, so the Oracle upstream output should omit tracking boxes
 - rebuilds downstream chain history from the full rendered upstream prompt plus the upstream raw answer
 - scores Oracle upstream samples only on the non-tracking component, then reports Oracle text-only chain metrics in Experiment B

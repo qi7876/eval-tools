@@ -15,6 +15,8 @@ except ImportError:  # pragma: no cover - environment dependent
 import cv2
 from PIL import Image
 
+from .constants import COORDINATE_SYSTEM_NORMALIZED_1000
+from .coordinates import normalize_corner_box_from_pixels, normalize_mot_box_from_pixels
 from .dataset import dataset_fingerprint, scan_dataset_report, summarize_scan_report
 from .protocols import (
     get_protocol,
@@ -100,10 +102,16 @@ def _prepare_tracking_rows(
     tracking_original: list[dict[str, Any]],
     sampled_frames_original: list[int],
     *,
+    frame_width: int,
+    frame_height: int,
     valid_interval: tuple[int, int] | None = None,
 ) -> list[dict[str, Any]]:
     by_original = {
-        int(row["frame_original"]): [float(value) for value in row["bbox_mot"]]
+        int(row["frame_original"]): normalize_mot_box_from_pixels(
+            row["bbox_mot"],
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
         for row in tracking_original
     }
     aligned: list[dict[str, Any]] = []
@@ -129,7 +137,26 @@ def _prepare_reference_payload(
     sample: SampleRecord,
     sampled_frames_original: list[int],
 ) -> dict[str, Any]:
+    frame_width, frame_height = sample.video_metadata.resolution
     payload = deepcopy(sample.reference_payload)
+    if sample.task_name == "Scoreboard_Single":
+        payload["bbox"] = normalize_corner_box_from_pixels(
+            payload["bbox"],
+            frame_width=frame_width,
+            frame_height=frame_height,
+        )
+    if sample.task_name == "Objects_Spatial_Relationships":
+        payload["objects"] = [
+            {
+                **obj,
+                "bbox": normalize_corner_box_from_pixels(
+                    obj["bbox"],
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                ),
+            }
+            for obj in payload["objects"]
+        ]
     if "segments_original" in payload:
         payload["segments_sampled"] = [
             {
@@ -151,7 +178,10 @@ def _prepare_reference_payload(
         payload["tracking_gt_sampled"] = _prepare_tracking_rows(
             payload.get("tracking_original", []),
             sampled_frames_original,
+            frame_width=frame_width,
+            frame_height=frame_height,
         )
+        payload.pop("tracking_original", None)
     if sample.task_name == "Spatial_Temporal_Grounding":
         start_frame, end_frame = sample.a_window or tuple(payload["time_window_original"])
         payload["time_window_sampled"] = original_interval_to_sampled_interval(
@@ -162,8 +192,11 @@ def _prepare_reference_payload(
         payload["tracking_gt_sampled"] = _prepare_tracking_rows(
             payload.get("tracking_original", []),
             sampled_frames_original,
+            frame_width=frame_width,
+            frame_height=frame_height,
             valid_interval=(start_frame, end_frame),
         )
+        payload.pop("tracking_original", None)
     return payload
 
 
@@ -205,6 +238,9 @@ def build_prepared_sample(
         metadata={
             "num_sampled_frames": len(sampled_frames_original),
             "video_total_frames": sample.video_metadata.total_frames,
+            "frame_width": sample.video_metadata.resolution[0],
+            "frame_height": sample.video_metadata.resolution[1],
+            "coordinate_system": COORDINATE_SYSTEM_NORMALIZED_1000,
         },
     )
     write_json(bundle_dir / "manifest.json", prepared.to_dict())
@@ -321,6 +357,7 @@ def build_protocol_cache(
             "data_status": data_status,
             "supported_dataset_fingerprint": dataset_fingerprint(records),
             "num_prepared_samples": len(prepared_samples),
+            "coordinate_system": COORDINATE_SYSTEM_NORMALIZED_1000,
         },
     )
     return {
@@ -366,15 +403,26 @@ def build_prepared_data(
 
 def load_prepared_samples(prepared_root: Path, protocol_id: str) -> list[PreparedSample]:
     protocol_root = prepared_root / protocol_id
+    build_manifest = read_json(protocol_root / "build_manifest.json")
+    if build_manifest.get("coordinate_system") != COORDINATE_SYSTEM_NORMALIZED_1000:
+        raise ValueError(
+            f"{protocol_root}: unsupported prepared coordinate_system "
+            f"{build_manifest.get('coordinate_system')!r}; rebuild prepared data"
+        )
     index_rows = read_jsonl(protocol_root / "index.jsonl")
     prepared: list[PreparedSample] = []
     for row in index_rows:
         manifest_path = protocol_root / row["manifest_path"]
         sample = PreparedSample.from_dict(read_json(manifest_path))
+        sample.metadata = dict(sample.metadata)
+        if sample.metadata.get("coordinate_system") != COORDINATE_SYSTEM_NORMALIZED_1000:
+            raise ValueError(
+                f"{manifest_path}: unsupported sample coordinate_system "
+                f"{sample.metadata.get('coordinate_system')!r}; rebuild prepared data"
+            )
         sample.frame_files = [
             str((manifest_path.parent / relative_path).resolve()) for relative_path in sample.frame_files
         ]
-        sample.metadata = dict(sample.metadata)
         sample.metadata["bundle_dir"] = str(manifest_path.parent.resolve())
         prepared.append(sample)
     return prepared
