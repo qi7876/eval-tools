@@ -18,7 +18,7 @@ from .config import (
     load_run_eval_config,
     load_validate_data_config,
 )
-from .constants import TASK_SPATIAL_IMAGINATION
+from .constants import ORACLE_EXPERIMENT_B_VARIANTS, TASK_SPATIAL_IMAGINATION
 from .dataset import scan_dataset_report, summarize_scan_report
 from .experiments import (
     OraclePairError,
@@ -450,6 +450,8 @@ def cmd_prepare_data(args: argparse.Namespace) -> int:
         config.data_root,
         config.prepared_root,
         config.protocols,
+        media_formats=config.media_formats,
+        generate_oracle_visual_media=config.generate_oracle_visual_media,
         workers=config.workers,
     )
     for result in results:
@@ -488,6 +490,22 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         prepared_by_sample_id,
         target_sample_ids,
     )
+    if config.enable_oracle_track:
+        missing_oracle_visual_media = sorted(
+            {
+                pair.upstream_sample_id
+                for pair in chain_pairs
+                if not prepared_by_sample_id[pair.upstream_sample_id].oracle_visual_frame_files
+                or prepared_by_sample_id[pair.upstream_sample_id].oracle_visual_sampled_video_file
+                is None
+            }
+        )
+        if missing_oracle_visual_media:
+            raise ValueError(
+                "OracleTrack visual variants require prepared data with oracle visual media; "
+                "rebuild prepared data with [prepare_data].generate_oracle_visual_media = true. "
+                f"Missing upstream sample(s): {', '.join(missing_oracle_visual_media[:5])}"
+            )
     chain_pair_by_downstream_id = _chain_pairs_by_downstream_id(chain_pairs)
     chain_downstream_sample_ids = {pair.downstream_sample_id for pair in chain_pairs}
     normal_target_samples = [
@@ -506,7 +524,10 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     chain_structured_predictions_path = run_dir / "chain_structured_predictions.jsonl"
     chain_results_path = run_dir / "chain_results.jsonl"
     summary_path = run_dir / "summary.json"
-    oracle_pair_results_path = run_dir / "oracle_pair_results.jsonl"
+    oracle_pair_results_paths = {
+        variant: run_dir / f"oracle_{variant}_pair_results.jsonl"
+        for variant in ORACLE_EXPERIMENT_B_VARIANTS
+    }
 
     normal_results_by_sample_id = _load_existing_evaluation_records(results_path)
     chain_results_by_sample_id = _load_existing_evaluation_records(chain_results_path)
@@ -853,45 +874,57 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     )
 
     oracle_summary = None
-    oracle_pair_results = None
+    oracle_variant_pair_results = None
     oracle_errors_this_run: list[dict[str, str]] = []
     if config.chain_manifest:
-        oracle_pair_results = _load_existing_oracle_pair_results(oracle_pair_results_path)
+        oracle_variant_pair_results = (
+            {
+                variant: _load_existing_oracle_pair_results(oracle_pair_results_paths[variant])
+                for variant in ORACLE_EXPERIMENT_B_VARIANTS
+            }
+            if config.enable_oracle_track
+            else None
+        )
         if config.enable_oracle_track:
-            for pair in chain_pairs:
-                if pair.pair_id in oracle_pair_results:
-                    continue
-                try:
-                    pair_result = evaluate_oracle_chain_pair(
-                        adapter,
-                        prepared_by_sample_id,
-                        pair,
-                        prompt_pack=prompt_pack,
-                        oracle_prompt_pack=oracle_prompt_pack,
-                        structurer_service=structurer_service,
-                        judge_client=judge_client,
+            for variant in ORACLE_EXPERIMENT_B_VARIANTS:
+                variant_pair_results = oracle_variant_pair_results[variant]
+                variant_results_path = oracle_pair_results_paths[variant]
+                for pair in chain_pairs:
+                    if pair.pair_id in variant_pair_results:
+                        continue
+                    try:
+                        pair_result = evaluate_oracle_chain_pair(
+                            adapter,
+                            prepared_by_sample_id,
+                            pair,
+                            prompt_pack=prompt_pack,
+                            oracle_prompt_pack=oracle_prompt_pack,
+                            structurer_service=structurer_service,
+                            judge_client=judge_client,
+                            variant=variant,
+                        )
+                    except OraclePairError as exc:
+                        oracle_errors_this_run.append(
+                            {
+                                "variant": variant,
+                                "pair_id": exc.pair_id,
+                                "stage": exc.stage,
+                                "reason": f"{type(exc.cause).__name__}: {exc.cause}",
+                            }
+                        )
+                        continue
+                    variant_pair_results[pair.pair_id] = pair_result
+                    _append_oracle_pair_result(
+                        variant_results_path,
+                        pair.pair_id,
+                        pair_result["upstream"],
+                        pair_result["downstream"],
                     )
-                except OraclePairError as exc:
-                    oracle_errors_this_run.append(
-                        {
-                            "pair_id": exc.pair_id,
-                            "stage": exc.stage,
-                            "reason": f"{type(exc.cause).__name__}: {exc.cause}",
-                        }
-                    )
-                    continue
-                oracle_pair_results[pair.pair_id] = pair_result
-                _append_oracle_pair_result(
-                    oracle_pair_results_path,
-                    pair.pair_id,
-                    pair_result["upstream"],
-                    pair_result["downstream"],
-                )
 
         oracle_summary = summarize_experiment_b(
             chain_pairs,
             evaluation["records_by_sample_id"],
-            oracle_pair_results=oracle_pair_results,
+            oracle_variant_pair_results=oracle_variant_pair_results,
         )
 
     write_jsonl(
@@ -949,18 +982,19 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
             if sample_id in chain_pair_by_downstream_id
         ],
     )
-    if oracle_pair_results is not None:
-        write_jsonl(
-            oracle_pair_results_path,
-            [
-                {
-                    "pair_id": pair_id,
-                    "upstream": pair_result["upstream"].to_dict(),
-                    "downstream": pair_result["downstream"].to_dict(),
-                }
-                for pair_id, pair_result in sorted(oracle_pair_results.items())
-            ],
-        )
+    if oracle_variant_pair_results is not None:
+        for variant in ORACLE_EXPERIMENT_B_VARIANTS:
+            write_jsonl(
+                oracle_pair_results_paths[variant],
+                [
+                    {
+                        "pair_id": pair_id,
+                        "upstream": pair_result["upstream"].to_dict(),
+                        "downstream": pair_result["downstream"].to_dict(),
+                    }
+                    for pair_id, pair_result in sorted(oracle_variant_pair_results[variant].items())
+                ],
+            )
 
     protocol_manifest = read_json(config.prepared_root / config.protocol / "build_manifest.json")
 

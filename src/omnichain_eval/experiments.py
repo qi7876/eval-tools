@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 from .adapters.base import BaseModelAdapter
 from .constants import (
     BERTSCORE_MODEL,
+    ORACLE_EXPERIMENT_B_VARIANTS,
+    ORACLE_VARIANT_LANGUAGE,
+    ORACLE_VARIANT_LANGUAGE_VISUAL,
+    ORACLE_VARIANT_VISUAL,
     TASK_CONTINUOUS_ACTIONS,
 )
 from .dataset import DatasetScanReport, scan_dataset_report
@@ -186,18 +191,24 @@ def evaluate_oracle_chain_pair(
     pair: ChainPairRecord,
     *,
     prompt_pack: dict[str, PromptTemplate],
-    oracle_prompt_pack: dict[str, PromptTemplate],
+    oracle_prompt_pack: dict[str, dict[str, PromptTemplate]],
     structurer_service: StructurerService,
     judge_client: JudgeClient | None,
+    variant: str,
 ) -> dict[str, EvaluationRecord]:
     upstream_sample = prepared_by_sample_id[pair.upstream_sample_id]
     downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
-    oracle_upstream_prompt = render_oracle_upstream_prompt(oracle_prompt_pack, upstream_sample)
+    oracle_upstream_prompt = render_oracle_upstream_prompt(
+        oracle_prompt_pack,
+        upstream_sample,
+        variant=variant,
+    )
+    oracle_upstream_sample = _oracle_input_sample_for_variant(upstream_sample, variant=variant)
 
     try:
         upstream_raw = adapter.predict(
             build_model_input(
-                upstream_sample,
+                oracle_upstream_sample,
                 oracle_upstream_prompt,
             )
         )
@@ -288,31 +299,37 @@ def evaluate_oracle_chain_pair(
     }
 
 
-def summarize_experiment_b(
+def _oracle_input_sample_for_variant(sample: PreparedSample, *, variant: str) -> PreparedSample:
+    if variant == ORACLE_VARIANT_LANGUAGE:
+        return sample
+    if variant in {ORACLE_VARIANT_VISUAL, ORACLE_VARIANT_LANGUAGE_VISUAL}:
+        if not sample.oracle_visual_frame_files:
+            raise ValueError(f"{sample.sample_id}: missing oracle_visual_frame_files")
+        if sample.oracle_visual_sampled_video_file is None:
+            raise ValueError(f"{sample.sample_id}: missing oracle_visual_sampled_video_file")
+        return replace(
+            sample,
+            frame_files=list(sample.oracle_visual_frame_files),
+            sampled_video_file=sample.oracle_visual_sampled_video_file,
+        )
+    raise ValueError(f"unsupported Oracle variant: {variant}")
+
+
+def _summarize_base_chain_pairs(
     chain_pairs: list[ChainPairRecord],
     records_by_sample_id: dict[str, EvaluationRecord],
-    *,
-    oracle_pair_results: dict[str, dict[str, EvaluationRecord]] | None = None,
 ) -> dict[str, Any]:
-    if not chain_pairs:
-        return {}
     understanding_values: list[int] = []
     reasoning_values: list[int] = []
     chain_values: list[int] = []
     chain_wo_track_values: list[int] = []
-    oracle_understanding_values: list[int] = []
-    oracle_reasoning_values: list[int] = []
-    oracle_chain_wo_track_values: list[int] = []
     pending_pairs = 0
-    pending_oracle_pairs = 0
 
     for pair in chain_pairs:
         upstream = records_by_sample_id.get(pair.upstream_sample_id)
         downstream = records_by_sample_id.get(pair.downstream_sample_id)
         if upstream is None or downstream is None:
             pending_pairs += 1
-            if oracle_pair_results is not None:
-                pending_oracle_pairs += 1
             continue
         tracking_pass = int(upstream.component_pass.get("tracking_pass", 0))
         if pair.upstream_task_name == TASK_CONTINUOUS_ACTIONS:
@@ -326,31 +343,8 @@ def summarize_experiment_b(
         chain_values.append(understanding_pass * reasoning_pass)
         chain_wo_track_values.append(understanding_non_tracking * reasoning_pass)
 
-        if oracle_pair_results is None:
-            continue
-        oracle_pair = oracle_pair_results.get(pair.pair_id)
-        if oracle_pair is None:
-            pending_oracle_pairs += 1
-            continue
-        oracle_upstream = oracle_pair["upstream"]
-        oracle_downstream = oracle_pair["downstream"]
-        if pair.upstream_task_name == TASK_CONTINUOUS_ACTIONS:
-            oracle_understanding_non_tracking = int(
-                oracle_upstream.component_pass.get("judge_pass", 0)
-            )
-        else:
-            oracle_understanding_non_tracking = int(
-                oracle_upstream.component_pass.get("tiou_pass", 0)
-            )
-        oracle_reasoning_pass = int(oracle_downstream.component_pass.get("judge_pass", 0))
-        oracle_understanding_values.append(oracle_understanding_non_tracking)
-        oracle_reasoning_values.append(oracle_reasoning_pass)
-        oracle_chain_wo_track_values.append(
-            oracle_understanding_non_tracking * oracle_reasoning_pass
-        )
-
     num_scored_pairs = len(understanding_values)
-    summary = {
+    return {
         "num_chain_samples": len(chain_pairs),
         "num_scored_chain_samples": num_scored_pairs,
         "num_pending_chain_samples": pending_pairs,
@@ -363,29 +357,71 @@ def summarize_experiment_b(
             sum(chain_wo_track_values) / num_scored_pairs if num_scored_pairs else None
         ),
     }
-    if oracle_pair_results is not None:
-        num_scored_oracle_pairs = len(oracle_understanding_values)
-        summary.update(
-            {
-                "num_scored_chain_samples_oracle": num_scored_oracle_pairs,
-                "num_pending_chain_samples_oracle": pending_oracle_pairs,
-                "understanding_acc_oracle": (
-                    sum(oracle_understanding_values) / num_scored_oracle_pairs
-                    if num_scored_oracle_pairs
-                    else None
-                ),
-                "reasoning_acc_oracle": (
-                    sum(oracle_reasoning_values) / num_scored_oracle_pairs
-                    if num_scored_oracle_pairs
-                    else None
-                ),
-                "chain_success_wo_track_oracle": (
-                    sum(oracle_chain_wo_track_values) / num_scored_oracle_pairs
-                    if num_scored_oracle_pairs
-                    else None
-                ),
-            }
+
+
+def _summarize_oracle_variant_chain_pairs(
+    chain_pairs: list[ChainPairRecord],
+    pair_results: dict[str, dict[str, EvaluationRecord]],
+) -> dict[str, Any]:
+    understanding_values: list[int] = []
+    reasoning_values: list[int] = []
+    chain_wo_track_values: list[int] = []
+    pending_pairs = 0
+
+    for pair in chain_pairs:
+        oracle_pair = pair_results.get(pair.pair_id)
+        if oracle_pair is None:
+            pending_pairs += 1
+            continue
+        oracle_upstream = oracle_pair["upstream"]
+        oracle_downstream = oracle_pair["downstream"]
+        if pair.upstream_task_name == TASK_CONTINUOUS_ACTIONS:
+            oracle_understanding_non_tracking = int(
+                oracle_upstream.component_pass.get("judge_pass", 0)
+            )
+        else:
+            oracle_understanding_non_tracking = int(
+                oracle_upstream.component_pass.get("tiou_pass", 0)
+            )
+        oracle_reasoning_pass = int(oracle_downstream.component_pass.get("judge_pass", 0))
+        understanding_values.append(oracle_understanding_non_tracking)
+        reasoning_values.append(oracle_reasoning_pass)
+        chain_wo_track_values.append(
+            oracle_understanding_non_tracking * oracle_reasoning_pass
         )
+
+    num_scored_pairs = len(understanding_values)
+    return {
+        "num_chain_samples": len(chain_pairs),
+        "num_scored_chain_samples": num_scored_pairs,
+        "num_pending_chain_samples": pending_pairs,
+        "understanding_acc": (
+            sum(understanding_values) / num_scored_pairs if num_scored_pairs else None
+        ),
+        "reasoning_acc": sum(reasoning_values) / num_scored_pairs if num_scored_pairs else None,
+        "chain_success_wo_track": (
+            sum(chain_wo_track_values) / num_scored_pairs if num_scored_pairs else None
+        ),
+    }
+
+
+def summarize_experiment_b(
+    chain_pairs: list[ChainPairRecord],
+    records_by_sample_id: dict[str, EvaluationRecord],
+    *,
+    oracle_variant_pair_results: dict[str, dict[str, dict[str, EvaluationRecord]]] | None = None,
+) -> dict[str, Any]:
+    if not chain_pairs:
+        return {}
+    summary = {
+        "base": _summarize_base_chain_pairs(chain_pairs, records_by_sample_id),
+    }
+    if oracle_variant_pair_results is not None:
+        for variant in ORACLE_EXPERIMENT_B_VARIANTS:
+            summary[f"oracle_{variant}"] = _summarize_oracle_variant_chain_pairs(
+                chain_pairs,
+                oracle_variant_pair_results.get(variant, {}),
+            )
     return summary
 
 

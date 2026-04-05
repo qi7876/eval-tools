@@ -1,6 +1,7 @@
-You will receive sampled video frames in chronological order.
+You will receive sampled visual inputs in chronological order.
+These sampled inputs correspond to approximately {{sampled_video_fps}} fps.
 
-Use the ranking, score, and other visible game-state information in the frames to answer the question.
+Use the ranking, score, and other visible game-state information in the sampled inputs to answer the question.
 Depending on the question, the answer may involve ranking, score, or another game-status conclusion.
 
 Question:

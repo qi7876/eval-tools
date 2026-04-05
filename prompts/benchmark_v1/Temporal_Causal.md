@@ -1,6 +1,7 @@
-You will receive sampled video frames in chronological order.
+You will receive sampled visual inputs in chronological order.
+These sampled inputs correspond to approximately {{sampled_video_fps}} fps.
 
-Use the frames to answer why the asked result happened.
+Use the sampled inputs to answer why the asked result happened.
 Depending on the question, the result may be a win, loss, ranking, lead change, failure, or another competition outcome.
 Your answer should identify the main cause shown in the video, not merely restate the result.
 

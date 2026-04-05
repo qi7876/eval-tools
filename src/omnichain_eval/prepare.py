@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
+from fractions import Fraction
 from pathlib import Path
 from typing import Any
 
@@ -12,11 +13,19 @@ try:  # pragma: no cover - optional fast path
     import av  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover - environment dependent
     av = None
-import cv2
-from PIL import Image
+from PIL import Image, ImageDraw
 
-from .constants import COORDINATE_SYSTEM_NORMALIZED_1000
-from .coordinates import normalize_corner_box_from_pixels, normalize_mot_box_from_pixels
+from .constants import (
+    COORDINATE_SYSTEM_NORMALIZED_1000,
+    SINGLE_FRAME_TASKS,
+    STG_UPSTREAM_TASKS,
+    VIDEO_FPS,
+)
+from .coordinates import (
+    denormalize_mot_box_to_pixel_corners,
+    normalize_corner_box_from_pixels,
+    normalize_mot_box_from_pixels,
+)
 from .dataset import dataset_fingerprint, scan_dataset_report, summarize_scan_report
 from .protocols import (
     get_protocol,
@@ -39,19 +48,19 @@ from .utils import (
 def decode_selected_frames(video_path: Path, frame_indices: list[int]) -> dict[int, Image.Image]:
     if not frame_indices:
         return {}
-    if av is not None:
-        return _decode_selected_frames_with_av(video_path, frame_indices)
-    return _decode_selected_frames_with_cv2(video_path, frame_indices)
+    pyav_module = _require_pyav()
+    return _decode_selected_frames_with_av(pyav_module, video_path, frame_indices)
 
 
 def _decode_selected_frames_with_av(
+    pyav_module: Any,
     video_path: Path,
     frame_indices: list[int],
 ) -> dict[int, Image.Image]:
     targets = sorted(set(frame_indices))
     results: dict[int, Image.Image] = {}
     target_cursor = 0
-    with av.open(str(video_path)) as container:
+    with pyav_module.open(str(video_path)) as container:
         stream = container.streams.video[0]
         for frame_index, frame in enumerate(container.decode(stream)):
             if target_cursor >= len(targets):
@@ -73,28 +82,6 @@ def _decode_selected_frames_with_av(
     missing = [index for index in targets if index not in results]
     if missing:
         raise ValueError(f"{video_path} is missing decoded frames: {missing[:10]}")
-    return results
-
-
-def _decode_selected_frames_with_cv2(
-    video_path: Path,
-    frame_indices: list[int],
-) -> dict[int, Image.Image]:
-    targets = sorted(set(frame_indices))
-    results: dict[int, Image.Image] = {}
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise ValueError(f"failed to open video with OpenCV: {video_path}")
-    try:
-        for target in targets:
-            capture.set(cv2.CAP_PROP_POS_FRAMES, target)
-            success, frame = capture.read()
-            if not success or frame is None:
-                raise ValueError(f"{video_path} is missing decoded frame {target}")
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            results[target] = Image.fromarray(rgb)
-    finally:
-        capture.release()
     return results
 
 
@@ -200,20 +187,200 @@ def _prepare_reference_payload(
     return payload
 
 
+def _sampled_video_relative_path() -> str:
+    return str(Path("sampled_video.mp4"))
+
+
+def _oracle_visual_frame_relative_path(sampled_index: int) -> str:
+    return str(Path("oracle_visual") / "frames" / f"{sampled_index:04d}.jpg")
+
+
+def _oracle_visual_video_relative_path() -> str:
+    return str(Path("oracle_visual") / "sampled_video.mp4")
+
+
+def _normalize_media_formats(media_formats: list[str] | None) -> set[str]:
+    values = media_formats or ["frames"]
+    allowed_values = {"frames", "sampled_video"}
+    normalized_values: set[str] = set()
+    for value in values:
+        if value not in allowed_values:
+            raise ValueError(f"unsupported media format: {value}")
+        normalized_values.add(value)
+    if not normalized_values:
+        raise ValueError("at least one media format must be requested")
+    return normalized_values
+
+
+def _sampled_video_fps_for_frames(sampled_frames_original: list[int]) -> float | None:
+    if len(sampled_frames_original) <= 1:
+        return None
+    first_frame = sampled_frames_original[0]
+    last_frame = sampled_frames_original[-1]
+    interval = max(last_frame - first_frame, 1)
+    return ((len(sampled_frames_original) - 1) * VIDEO_FPS) / interval
+
+
+def _require_pyav() -> Any:
+    if av is None:
+        raise RuntimeError(
+            "prepared-data video decoding/encoding requires PyAV, but the `av` package "
+            "is not installed"
+        )
+    return av
+
+
+def _ensure_libx264_encoder(pyav_module: Any) -> None:
+    try:
+        pyav_module.CodecContext.create("libx264", "w")
+    except Exception as exc:  # pragma: no cover - depends on local ffmpeg build
+        raise RuntimeError(
+            "sampled_video output requires the libx264 encoder, but it is not available "
+            "in the current PyAV/FFmpeg build"
+        ) from exc
+
+
+def _write_sampled_video(
+    output_path: Path,
+    frame_images: list[Image.Image],
+    *,
+    sampled_video_fps: float,
+) -> None:
+    pyav_module = _require_pyav()
+    _ensure_libx264_encoder(pyav_module)
+    if not frame_images:
+        raise ValueError("cannot write sampled video without frames")
+    width, height = frame_images[0].size
+    rate = Fraction(str(sampled_video_fps)).limit_denominator(1000)
+    try:
+        with pyav_module.open(str(output_path), mode="w") as container:
+            stream = container.add_stream("libx264", rate=rate)
+            stream.width = width
+            stream.height = height
+            stream.pix_fmt = "yuv420p"
+            stream.options = {
+                "crf": "23",
+                "preset": "medium",
+            }
+            for image in frame_images:
+                if image.size != (width, height):
+                    raise ValueError(
+                        f"inconsistent sampled frame sizes for video encode: "
+                        f"expected {(width, height)}, got {image.size}"
+                    )
+                video_frame = pyav_module.VideoFrame.from_image(image)
+                for packet in stream.encode(video_frame):
+                    container.mux(packet)
+            for packet in stream.encode():
+                container.mux(packet)
+    except Exception as exc:
+        raise RuntimeError(f"failed to encode sampled video at {output_path}") from exc
+
+
+def _tracking_rows_by_sampled_frame(
+    tracking_rows: list[dict[str, Any]],
+) -> dict[int, list[dict[str, Any]]]:
+    rows_by_sampled_frame: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for row in tracking_rows:
+        rows_by_sampled_frame[int(row["frame_sampled"])].append(row)
+    return rows_by_sampled_frame
+
+
+def _draw_oracle_tracking_overlay(
+    image: Image.Image,
+    tracking_rows: list[dict[str, Any]],
+) -> Image.Image:
+    overlay = image.copy()
+    draw = ImageDraw.Draw(overlay)
+    for row in tracking_rows:
+        x1, y1, x2, y2 = denormalize_mot_box_to_pixel_corners(
+            row["bbox_mot"],
+            frame_width=overlay.width,
+            frame_height=overlay.height,
+        )
+        if x2 <= x1:
+            x2 = min(overlay.width - 1, x1 + 1)
+        if y2 <= y1:
+            y2 = min(overlay.height - 1, y1 + 1)
+        draw.rectangle([x1, y1, x2, y2], outline=(0, 255, 0), width=3)
+        label_top = max(0, y1 - 16)
+        label_right = min(overlay.width - 1, x1 + 58)
+        label_bottom = min(overlay.height - 1, label_top + 14)
+        draw.rectangle(
+            [x1, label_top, label_right, label_bottom],
+            fill=(0, 255, 0),
+        )
+        draw.text((x1 + 3, label_top + 1), "TARGET", fill=(0, 0, 0))
+    return overlay
+
+
 def build_prepared_sample(
     sample: SampleRecord,
     protocol: ProtocolSpec,
     sampled_frames_original: list[int],
     bundle_dir: Path,
     decoded_frames: dict[int, Image.Image],
+    *,
+    media_formats: set[str],
+    generate_oracle_visual_media: bool,
 ) -> PreparedSample:
-    frames_dir = ensure_directory(bundle_dir / "frames")
+    reference_payload = _prepare_reference_payload(sample, sampled_frames_original)
     frame_files: list[str] = []
-    for sampled_index, frame_original in enumerate(sampled_frames_original):
-        output_name = f"{sampled_index:04d}.jpg"
-        output_path = frames_dir / output_name
-        decoded_frames[frame_original].save(output_path, format="JPEG", quality=95)
-        frame_files.append(str(Path("frames") / output_name))
+    if "frames" in media_formats:
+        frames_dir = ensure_directory(bundle_dir / "frames")
+        for sampled_index, frame_original in enumerate(sampled_frames_original):
+            output_name = f"{sampled_index:04d}.jpg"
+            output_path = frames_dir / output_name
+            decoded_frames[frame_original].save(output_path, format="JPEG", quality=95)
+            frame_files.append(str(Path("frames") / output_name))
+    sampled_video_fps = _sampled_video_fps_for_frames(sampled_frames_original)
+    sampled_video_file: str | None = None
+    if "sampled_video" in media_formats and sampled_video_fps is not None:
+        sampled_video_path = bundle_dir / _sampled_video_relative_path()
+        sampled_images = [decoded_frames[index] for index in sampled_frames_original]
+        _write_sampled_video(
+            sampled_video_path,
+            sampled_images,
+            sampled_video_fps=sampled_video_fps,
+        )
+        sampled_video_file = _sampled_video_relative_path()
+
+    oracle_visual_frame_files: list[str] = []
+    oracle_visual_sampled_video_file: str | None = None
+    if generate_oracle_visual_media and sample.task_name in STG_UPSTREAM_TASKS:
+        tracking_gt = reference_payload.get("tracking_gt_sampled")
+        if not isinstance(tracking_gt, list) or not tracking_gt:
+            raise ValueError(f"{sample.sample_id}: missing tracking_gt_sampled for oracle visual media")
+        tracking_by_sampled_frame = _tracking_rows_by_sampled_frame(tracking_gt)
+        oracle_visual_frames_dir = ensure_directory(bundle_dir / "oracle_visual" / "frames")
+        overlay_images: list[Image.Image] = []
+        for sampled_index, frame_original in enumerate(sampled_frames_original):
+            overlay_image = _draw_oracle_tracking_overlay(
+                decoded_frames[frame_original],
+                tracking_by_sampled_frame.get(sampled_index, []),
+            )
+            overlay_output_path = oracle_visual_frames_dir / f"{sampled_index:04d}.jpg"
+            overlay_image.save(overlay_output_path, format="JPEG", quality=95)
+            oracle_visual_frame_files.append(_oracle_visual_frame_relative_path(sampled_index))
+            overlay_images.append(overlay_image)
+        if sampled_video_fps is None:
+            raise ValueError(
+                f"{sample.sample_id}: oracle visual media requires multi-frame sampled video support"
+            )
+        oracle_visual_video_path = bundle_dir / _oracle_visual_video_relative_path()
+        _write_sampled_video(
+            oracle_visual_video_path,
+            overlay_images,
+            sampled_video_fps=sampled_video_fps,
+        )
+        oracle_visual_sampled_video_file = _oracle_visual_video_relative_path()
+    if not frame_files and sampled_video_file is None:
+        if sample.task_name in SINGLE_FRAME_TASKS:
+            raise ValueError(
+                f"{sample.sample_id}: no prepared media produced; single-frame tasks require "
+                "`frames` in [prepare_data].media_formats"
+            )
+        raise ValueError(f"{sample.sample_id}: no prepared media produced")
     prepared = PreparedSample(
         sample_id=sample.sample_id,
         annotation_id=sample.annotation_id,
@@ -227,7 +394,7 @@ def build_prepared_sample(
         frame_files=frame_files,
         source_video_path=str(sample.source_video_path),
         source_annotation_path=str(sample.source_annotation_path),
-        reference_payload=_prepare_reference_payload(sample, sampled_frames_original),
+        reference_payload=reference_payload,
         timestamp_frame=sample.timestamp_frame,
         q_window=sample.q_window,
         a_window=sample.a_window,
@@ -235,12 +402,18 @@ def build_prepared_sample(
             str(sample.source_tracking_path) if sample.source_tracking_path is not None else None
         ),
         upstream_annotation_id=sample.upstream_annotation_id,
+        sampled_video_file=sampled_video_file,
+        sampled_video_fps=sampled_video_fps,
+        oracle_visual_frame_files=oracle_visual_frame_files,
+        oracle_visual_sampled_video_file=oracle_visual_sampled_video_file,
         metadata={
             "num_sampled_frames": len(sampled_frames_original),
             "video_total_frames": sample.video_metadata.total_frames,
             "frame_width": sample.video_metadata.resolution[0],
             "frame_height": sample.video_metadata.resolution[1],
             "coordinate_system": COORDINATE_SYSTEM_NORMALIZED_1000,
+            "media_formats": sorted(media_formats),
+            "generate_oracle_visual_media": generate_oracle_visual_media,
         },
     )
     write_json(bundle_dir / "manifest.json", prepared.to_dict())
@@ -266,6 +439,9 @@ def _build_video_cache_entries(
     video_records: list[SampleRecord],
     protocol: ProtocolSpec,
     samples_root: Path,
+    *,
+    media_formats: set[str],
+    generate_oracle_visual_media: bool,
 ) -> tuple[list[PreparedSample], list[dict[str, Any]]]:
     ordered_records = sorted(video_records, key=lambda record: record.sample_id)
     sample_plan = {
@@ -286,6 +462,8 @@ def _build_video_cache_entries(
             sample_plan[record.sample_id],
             bundle_dir,
             decoded_frames,
+            media_formats=media_formats,
+            generate_oracle_visual_media=generate_oracle_visual_media,
         )
         prepared_samples.append(prepared)
         index_rows.append(
@@ -307,12 +485,15 @@ def build_protocol_cache(
     prepared_root: Path,
     *,
     data_status: dict[str, Any],
+    media_formats: list[str],
+    generate_oracle_visual_media: bool,
     workers: int = 1,
 ) -> dict[str, Any]:
     if workers < 1:
         raise ValueError("prepare-data workers must be >= 1")
     protocol_root = ensure_directory(prepared_root / protocol.protocol_id)
     samples_root = ensure_directory(protocol_root / "samples")
+    requested_media_formats = _normalize_media_formats(media_formats)
     relevant_records = [
         record for record in records if protocol_supports_task(protocol, record.task_name)
     ]
@@ -331,6 +512,8 @@ def build_protocol_cache(
                 video_records,
                 protocol,
                 samples_root,
+                media_formats=requested_media_formats,
+                generate_oracle_visual_media=generate_oracle_visual_media,
             )
             for video_path, video_records in video_jobs
         ]
@@ -358,6 +541,8 @@ def build_protocol_cache(
             "supported_dataset_fingerprint": dataset_fingerprint(records),
             "num_prepared_samples": len(prepared_samples),
             "coordinate_system": COORDINATE_SYSTEM_NORMALIZED_1000,
+            "media_formats": sorted(requested_media_formats),
+            "generate_oracle_visual_media": generate_oracle_visual_media,
         },
     )
     return {
@@ -374,10 +559,20 @@ def build_prepared_data(
     prepared_root: Path,
     protocol_ids: list[str],
     *,
+    media_formats: list[str] | None = None,
+    generate_oracle_visual_media: bool = False,
     workers: int = 1,
 ) -> list[dict[str, Any]]:
     if workers < 1:
         raise ValueError("prepare-data workers must be >= 1")
+    requested_media_formats = sorted(_normalize_media_formats(media_formats))
+    if generate_oracle_visual_media and (
+        "frames" not in requested_media_formats or "sampled_video" not in requested_media_formats
+    ):
+        raise ValueError(
+            "oracle visual media generation requires media_formats to include both frames "
+            "and sampled_video"
+        )
     scan_report = scan_dataset_report(data_root)
     if scan_report.issues:
         issue_text = "\n".join(scan_report.issues[:50])
@@ -395,6 +590,8 @@ def build_prepared_data(
                 protocol,
                 prepared_root,
                 data_status=data_status,
+                media_formats=requested_media_formats,
+                generate_oracle_visual_media=generate_oracle_visual_media,
                 workers=workers,
             )
         )
@@ -423,6 +620,18 @@ def load_prepared_samples(prepared_root: Path, protocol_id: str) -> list[Prepare
         sample.frame_files = [
             str((manifest_path.parent / relative_path).resolve()) for relative_path in sample.frame_files
         ]
+        if len(sample.sampled_frames_original) > 1 and sample.sampled_video_fps is None:
+            raise ValueError(f"{manifest_path}: missing sampled_video_fps; rebuild prepared data")
+        if sample.sampled_video_file is not None:
+            sample.sampled_video_file = str((manifest_path.parent / sample.sampled_video_file).resolve())
+        sample.oracle_visual_frame_files = [
+            str((manifest_path.parent / relative_path).resolve())
+            for relative_path in sample.oracle_visual_frame_files
+        ]
+        if sample.oracle_visual_sampled_video_file is not None:
+            sample.oracle_visual_sampled_video_file = str(
+                (manifest_path.parent / sample.oracle_visual_sampled_video_file).resolve()
+            )
         sample.metadata["bundle_dir"] = str(manifest_path.parent.resolve())
         prepared.append(sample)
     return prepared

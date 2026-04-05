@@ -1,6 +1,7 @@
-You will receive sampled video frames in chronological order.
+You will receive sampled visual inputs in chronological order.
+These sampled inputs correspond to approximately {{sampled_video_fps}} fps.
 
-Use the scoreboard shown in the frames to answer every scoreboard detail requested in the question.
+Use the scoreboard shown in the sampled inputs to answer every scoreboard detail requested in the question.
 
 Question:
 {{question}}

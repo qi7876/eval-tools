@@ -5,6 +5,7 @@ from PIL import Image
 
 from omnichain_eval.adapters.base import BaseModelAdapter, MockAdapter
 from omnichain_eval.cli import main
+from omnichain_eval.constants import ORACLE_EXPERIMENT_B_VARIANTS
 from omnichain_eval.experiments import (
     build_chain_manifest,
     evaluate_oracle_chain_pair,
@@ -479,7 +480,13 @@ def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_reuses_rendered_hist
     )
     prepared_root = tmp_path / "prepared"
     chain_manifest_path = tmp_path / "chain_pairs.jsonl"
-    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_prepared_data(
+        FIXTURE_ROOT,
+        prepared_root,
+        ["main"],
+        media_formats=["frames", "sampled_video"],
+        generate_oracle_visual_media=True,
+    )
     build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
 
     prepared_by_sample_id = {
@@ -498,6 +505,7 @@ def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_reuses_rendered_hist
     oracle_upstream_prompt = render_oracle_upstream_prompt(
         oracle_prompt_pack,
         prepared_by_sample_id[pair.upstream_sample_id],
+        variant="language",
     )
     downstream_prompt = render_prompt(prompt_pack, prepared_by_sample_id[pair.downstream_sample_id])
 
@@ -509,6 +517,7 @@ def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_reuses_rendered_hist
         oracle_prompt_pack=oracle_prompt_pack,
         structurer_service=structurer_service,
         judge_client=StaticJudgeClient(always_pass=True),
+        variant="language",
     )
 
     upstream_messages = adapter.inputs[0].messages_as_dicts()
@@ -533,6 +542,65 @@ def test_evaluate_oracle_chain_pair_injects_gt_tracking_and_reuses_rendered_hist
     assert downstream_messages[2]["content"] == downstream_prompt.prompt_text
 
 
+def test_evaluate_oracle_chain_pair_visual_uses_overlay_media(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    chain_manifest_path = tmp_path / "chain_pairs.jsonl"
+    build_prepared_data(
+        FIXTURE_ROOT,
+        prepared_root,
+        ["main"],
+        media_formats=["frames", "sampled_video"],
+        generate_oracle_visual_media=True,
+    )
+    build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
+
+    prepared_by_sample_id = {
+        sample.sample_id: sample for sample in load_prepared_samples(prepared_root, "main")
+    }
+    pair = load_chain_pairs(chain_manifest_path)[0]
+    adapter = OracleTrackingDroppingAdapter()
+    structurer_service = StructurerService(
+        backend=StaticParseStructurerBackend(),
+        prompt_pack=load_structurer_prompt_pack(STRUCTURER_PROMPT_ROOT),
+        oracle_prompt_pack=load_oracle_structurer_prompt_pack(ORACLE_STRUCTURER_PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+    prompt_pack = load_prompt_pack(PROMPT_ROOT)
+    oracle_prompt_pack = load_oracle_prompt_pack(ORACLE_PROMPT_ROOT)
+    oracle_upstream_prompt = render_oracle_upstream_prompt(
+        oracle_prompt_pack,
+        prepared_by_sample_id[pair.upstream_sample_id],
+        variant="visual",
+    )
+
+    evaluate_oracle_chain_pair(
+        adapter,
+        prepared_by_sample_id,
+        pair,
+        prompt_pack=prompt_pack,
+        oracle_prompt_pack=oracle_prompt_pack,
+        structurer_service=structurer_service,
+        judge_client=StaticJudgeClient(always_pass=True),
+        variant="visual",
+    )
+
+    oracle_upstream_input = adapter.inputs[0]
+    assert oracle_upstream_input.sample.frame_files == prepared_by_sample_id[pair.upstream_sample_id].oracle_visual_frame_files
+    assert (
+        oracle_upstream_input.sample.sampled_video_file
+        == prepared_by_sample_id[pair.upstream_sample_id].oracle_visual_sampled_video_file
+    )
+    upstream_messages = oracle_upstream_input.messages_as_dicts()
+    assert upstream_messages[0]["content"] == oracle_upstream_prompt.prompt_text
+    assert "highlighted with GT tracking boxes directly on the sampled inputs" in upstream_messages[0]["content"]
+    assert '"bbox_mot"' not in upstream_messages[0]["content"]
+
+
 def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path):
     monkeypatch.setattr("omnichain_eval.experiments.compute_bertscore", lambda records: None)
     monkeypatch.setattr(
@@ -542,7 +610,13 @@ def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path)
     prepared_root = tmp_path / "prepared"
     artifacts_root = tmp_path / "artifacts" / "runs"
     chain_manifest_path = tmp_path / "chain_pairs.jsonl"
-    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+    build_prepared_data(
+        FIXTURE_ROOT,
+        prepared_root,
+        ["main"],
+        media_formats=["frames", "sampled_video"],
+        generate_oracle_visual_media=True,
+    )
     build_chain_manifest(FIXTURE_ROOT, chain_manifest_path)
     adapter = CountingAdapter()
 
@@ -564,26 +638,48 @@ def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path)
 
     assert first_exit_code == 0
     run_dir = artifacts_root / "oracle-run"
-    oracle_rows = (run_dir / "oracle_pair_results.jsonl").read_text(encoding="utf-8").strip().splitlines()
-    assert len(oracle_rows) == 1
-    assert len(adapter.inputs["TestSport/TestEvent/1#2"]) == 2
-    assert len(adapter.inputs["TestSport/TestEvent/1#4"]) == 2
-    oracle_upstream_messages = adapter.inputs["TestSport/TestEvent/1#2"][1].messages_as_dicts()
+    for variant in ORACLE_EXPERIMENT_B_VARIANTS:
+        oracle_rows = (
+            run_dir / f"oracle_{variant}_pair_results.jsonl"
+        ).read_text(encoding="utf-8").strip().splitlines()
+        assert len(oracle_rows) == 1
+    assert len(adapter.inputs["TestSport/TestEvent/1#2"]) == 4
+    assert len(adapter.inputs["TestSport/TestEvent/1#4"]) == 4
     oracle_prompt_pack = load_oracle_prompt_pack(ORACLE_PROMPT_ROOT)
     prepared_by_sample_id = {
         sample.sample_id: sample for sample in load_prepared_samples(prepared_root, "main")
     }
-    oracle_upstream_prompt = render_oracle_upstream_prompt(
+    language_prompt = render_oracle_upstream_prompt(
         oracle_prompt_pack,
         prepared_by_sample_id["TestSport/TestEvent/1#2"],
+        variant="language",
     )
-    assert oracle_upstream_messages[0]["content"] == oracle_upstream_prompt.prompt_text
+    visual_prompt = render_oracle_upstream_prompt(
+        oracle_prompt_pack,
+        prepared_by_sample_id["TestSport/TestEvent/1#2"],
+        variant="visual",
+    )
+    language_visual_prompt = render_oracle_upstream_prompt(
+        oracle_prompt_pack,
+        prepared_by_sample_id["TestSport/TestEvent/1#2"],
+        variant="language_visual",
+    )
+    upstream_inputs = adapter.inputs["TestSport/TestEvent/1#2"]
+    assert upstream_inputs[1].messages_as_dicts()[0]["content"] == language_prompt.prompt_text
+    assert upstream_inputs[2].messages_as_dicts()[0]["content"] == visual_prompt.prompt_text
+    assert upstream_inputs[3].messages_as_dicts()[0]["content"] == language_visual_prompt.prompt_text
+    assert upstream_inputs[2].sample.frame_files == prepared_by_sample_id["TestSport/TestEvent/1#2"].oracle_visual_frame_files
+    assert upstream_inputs[3].sample.frame_files == prepared_by_sample_id["TestSport/TestEvent/1#2"].oracle_visual_frame_files
     first_summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     experiment_b = first_summary["experiment_b"]
-    assert "chain_success" in experiment_b
-    assert "chain_success_wo_track" in experiment_b
-    assert "chain_success_wo_track_oracle" in experiment_b
-    assert "chain_success_oracle" not in experiment_b
+    assert "base" in experiment_b
+    assert "oracle_language" in experiment_b
+    assert "oracle_visual" in experiment_b
+    assert "oracle_language_visual" in experiment_b
+    assert "chain_success" in experiment_b["base"]
+    assert "chain_success_wo_track" in experiment_b["base"]
+    assert "chain_success_wo_track" in experiment_b["oracle_language"]
+    assert "chain_success" not in experiment_b["oracle_language"]
 
     adapter.calls.clear()
     for sample_id in adapter.inputs:

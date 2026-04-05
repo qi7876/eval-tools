@@ -1,7 +1,8 @@
-You will receive sampled video frames in chronological order.
+You will receive sampled visual inputs in chronological order.
+These sampled inputs correspond to approximately {{sampled_video_fps}} fps.
 
 You will also receive a target description that specifies an action or event involving a particular subject.
-Use the frames to find when the described action or event happens.
+Use the sampled inputs to find when the described action or event happens.
 
 Target Description:
 {{question}}

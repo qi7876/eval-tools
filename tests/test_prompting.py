@@ -8,7 +8,9 @@ from omnichain_eval.prompting import (
     PromptTemplateError,
     build_chain_history,
     build_model_input,
+    load_oracle_prompt_pack,
     load_prompt_pack,
+    render_oracle_upstream_prompt,
     render_prompt,
 )
 from omnichain_eval.schema import PreparedSample
@@ -128,6 +130,7 @@ def test_render_prompt_omits_metadata_and_nonessential_indexing(monkeypatch, tmp
     assert "Valid sampled frame indices" not in scoreboard_prompt
     assert "There are" not in scoreboard_prompt
 
+    assert "These sampled inputs correspond to approximately" in actions_prompt
     assert "Valid sampled frame indices are" in actions_prompt
     assert "There are " in actions_prompt
 
@@ -208,11 +211,13 @@ def test_render_prompt_for_ai_coach_focuses_on_player_mistakes():
         source_video_path="video.mp4",
         source_annotation_path="anno.json",
         reference_payload={"text": "The player exposed the ball and lost balance."},
+        sampled_video_fps=10.0,
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
 
     assert "Identify the player's mistakes" in prompt
+    assert "approximately 10 fps" in prompt
     assert "actual mistakes" in prompt
     assert "improvement suggestions" in prompt
     assert "reference answer" not in prompt
@@ -234,11 +239,13 @@ def test_render_prompt_for_score_prediction_uses_general_game_state_wording():
         source_video_path="video.mp4",
         source_annotation_path="anno.json",
         reference_payload={"text": "Team A is more likely to finish ahead."},
+        sampled_video_fps=10.0,
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
 
     assert "ranking, score, and other visible game-state information" in prompt
+    assert "approximately 10 fps" in prompt
     assert "future result" not in prompt
     assert "predicted future result" not in prompt
 
@@ -258,11 +265,13 @@ def test_render_prompt_for_temporal_causal_uses_result_reasoning_wording():
         source_video_path="video.mp4",
         source_annotation_path="anno.json",
         reference_payload={"text": "Team A conceded twice late in the game."},
+        sampled_video_fps=10.0,
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
 
     assert "answer why the asked result happened" in prompt
+    assert "approximately 10 fps" in prompt
     assert "win, loss, ranking, lead change, failure, or another competition outcome" in prompt
     assert "not merely restate the result" in prompt
     assert "main cause of the asked result" in prompt
@@ -283,11 +292,13 @@ def test_render_prompt_for_spatial_imagination_describes_viewpoint_based_spatial
         source_video_path="video.mp4",
         source_annotation_path="anno.json",
         reference_payload={"text": "The attacker will cut toward the basket."},
+        sampled_video_fps=10.0,
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
 
     assert "previous question-answer messages" in prompt
+    assert "approximately 10 fps" in prompt
     assert "spatial conclusion required by that question" in prompt
     assert "specified viewpoint, observer position, or imagined camera angle" in prompt
     assert "position, movement trajectory, spatial relation, formation" in prompt
@@ -314,11 +325,13 @@ def test_render_prompt_for_stg_uses_target_description_wording():
         source_video_path="video.mp4",
         source_annotation_path="anno.json",
         reference_payload={},
+        sampled_video_fps=3.0,
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
 
     assert "Target Description:" in prompt
+    assert "approximately 3 fps" in prompt
     assert "action or event involving a particular subject" in prompt
     assert "find when the described action or event happens" in prompt
     assert "track the subject referred to by that target description" in prompt
@@ -347,23 +360,21 @@ def test_render_oracle_prompt_uses_known_positions_wording(monkeypatch, tmp_path
         if sample.task_name == "Continuous_Actions_Caption"
     )
 
-    from omnichain_eval.prompting import load_oracle_prompt_pack, render_oracle_upstream_prompt
-
     prompt = render_oracle_upstream_prompt(
         load_oracle_prompt_pack(ORACLE_PROMPT_ROOT),
         actions_sample,
+        variant="language",
     ).prompt_text
 
     assert "OracleTrack" not in prompt
     assert "The target athlete's position is already known in some sampled frames." in prompt
+    assert "These sampled inputs correspond to approximately" in prompt
     assert "normalized_1000 coordinate system" in prompt
     assert "The task is still to describe that target athlete's actions over time" in prompt
     assert "You do not need to output tracking boxes." in prompt
 
 
 def test_render_oracle_prompt_for_stg_uses_target_description_wording():
-    from omnichain_eval.prompting import load_oracle_prompt_pack, render_oracle_upstream_prompt
-
     sample = PreparedSample(
         sample_id="video/sample#6",
         annotation_id="6",
@@ -388,14 +399,17 @@ def test_render_oracle_prompt_for_stg_uses_target_description_wording():
                 {"frame_sampled": 2, "bbox_mot": [12, 22, 30, 40]},
             ]
         },
+        sampled_video_fps=3.0,
     )
 
     prompt = render_oracle_upstream_prompt(
         load_oracle_prompt_pack(ORACLE_PROMPT_ROOT),
         sample,
+        variant="language",
     ).prompt_text
 
     assert "Target Description:" in prompt
+    assert "approximately 3 fps" in prompt
     assert "action or event involving a particular subject" in prompt
     assert "find when the described action or event happens" in prompt
     assert "identify the subject referred to by the target description" in prompt
@@ -403,3 +417,70 @@ def test_render_oracle_prompt_for_stg_uses_target_description_wording():
     assert "You do not need to output tracking boxes." in prompt
     assert "OracleTrack" not in prompt
     assert "Question:" not in prompt
+
+
+def test_render_oracle_visual_prompt_uses_highlight_wording_without_tracking_json():
+    sample = PreparedSample(
+        sample_id="video/sample#7",
+        annotation_id="7",
+        video_key="video/sample",
+        task_name="Continuous_Actions_Caption",
+        task_level="independent",
+        protocol_id="main",
+        question_text="Describe the runner's actions.",
+        sampled_frames_original=[0, 1, 2],
+        sampled_to_original={0: 0, 1: 1, 2: 2},
+        frame_files=["frames/0000.jpg", "frames/0001.jpg", "frames/0002.jpg"],
+        source_video_path="video.mp4",
+        source_annotation_path="anno.json",
+        reference_payload={
+            "tracking_gt_sampled": [
+                {"frame_sampled": 0, "bbox_mot": [10, 20, 30, 40]},
+            ]
+        },
+        sampled_video_fps=10.0,
+    )
+
+    prompt = render_oracle_upstream_prompt(
+        load_oracle_prompt_pack(ORACLE_PROMPT_ROOT),
+        sample,
+        variant="visual",
+    ).prompt_text
+
+    assert "highlighted with GT tracking boxes directly on the sampled inputs" in prompt
+    assert '"bbox_mot"' not in prompt
+    assert "```json" not in prompt
+    assert "You do not need to output tracking boxes." in prompt
+
+
+def test_render_oracle_language_visual_prompt_combines_both_injections():
+    sample = PreparedSample(
+        sample_id="video/sample#8",
+        annotation_id="8",
+        video_key="video/sample",
+        task_name="Spatial_Temporal_Grounding",
+        task_level="independent",
+        protocol_id="main",
+        question_text="The athlete performs a jump.",
+        sampled_frames_original=[100, 110, 120, 130],
+        sampled_to_original={0: 100, 1: 110, 2: 120, 3: 130},
+        frame_files=["frames/0100.jpg", "frames/0110.jpg", "frames/0120.jpg", "frames/0130.jpg"],
+        source_video_path="video.mp4",
+        source_annotation_path="anno.json",
+        reference_payload={
+            "tracking_gt_sampled": [
+                {"frame_sampled": 0, "bbox_mot": [10, 20, 30, 40]},
+            ]
+        },
+        sampled_video_fps=3.0,
+    )
+
+    prompt = render_oracle_upstream_prompt(
+        load_oracle_prompt_pack(ORACLE_PROMPT_ROOT),
+        sample,
+        variant="language_visual",
+    ).prompt_text
+
+    assert "The target subject's position is already known in some sampled frames." in prompt
+    assert "highlighted with GT tracking boxes directly on the sampled inputs" in prompt
+    assert '"bbox_mot"' in prompt

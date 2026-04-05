@@ -1,4 +1,5 @@
-You will receive sampled video frames in chronological order.
+You will receive sampled visual inputs in chronological order.
+These sampled inputs correspond to approximately {{sampled_video_fps}} fps.
 
 Describe the target athlete's actions over time.
 

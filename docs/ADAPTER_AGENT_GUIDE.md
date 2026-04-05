@@ -61,6 +61,8 @@ Useful `PreparedSample` fields:
 - `sample.task_name`
 - `sample.question_text`
 - `sample.frame_files`
+- `sample.sampled_video_file`
+- `sample.sampled_video_fps`
 - `sample.sampled_frames_original`
 - `sample.sampled_to_original`
 - `sample.metadata["bundle_dir"]`
@@ -68,7 +70,8 @@ Useful `PreparedSample` fields:
 Important detail:
 
 - `load_prepared_samples()` rewrites `sample.frame_files` to absolute paths at runtime in [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py#L329).
-- The adapter can open frame files directly from those absolute paths.
+- `load_prepared_samples()` also rewrites `sample.sampled_video_file` to an absolute path when it exists.
+- The adapter can open frame files or the sampled video directly from those absolute paths.
 
 ### What the framework already does
 
@@ -91,7 +94,8 @@ The adapter does not choose prompts. The framework loads them from TOML:
 
 - `prompts/benchmark_v1/`: 10 benchmark tasks
 - `prompts/judge_v1/`: 9 judge-evaluated tasks
-- `prompts/benchmark_oracle_v1/` and `prompts/structurer_oracle_v1/`: OracleTrack upstream reruns for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding` only
+- `prompts/benchmark_oracle_v1/`: OracleTrack upstream prompt base directory with `language/`, `visual`, and `language_visual/` variants for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding`
+- `prompts/structurer_oracle_v1/`: OracleTrack upstream structurer prompt pack for those same two tasks
 
 ## Message Semantics You Must Preserve
 
@@ -124,7 +128,7 @@ Do not drop or rewrite this history. If the model API accepts chat messages, pas
 
 - loading the model
 - caching the loaded model inside the adapter instance
-- turning `frame_files + messages` into the model's native inference input
+- turning `frame_files` or `sampled_video_file` plus `messages` into the model's native inference input
 - calling generation
 - returning the raw model output string
 
@@ -186,7 +190,7 @@ For downstream chain samples, forward the full history into the model. The adapt
 
 ### 5. Ignore OracleTrack implementation details
 
-OracleTrack is framework-owned. The framework injects GT tracking into the upstream rerun prompt body, keeps that prompt close to the normal task template, and rebuilds downstream history from the full rendered upstream prompt plus the upstream raw answer. The adapter does not need any OracleTrack-specific branch.
+OracleTrack is framework-owned. The framework runs three Oracle variants, injects GT tracking into the upstream rerun prompt when needed, swaps in Oracle visual-overlay media when needed, and rebuilds downstream history from the full rendered upstream prompt plus the upstream raw answer. The adapter does not need any OracleTrack-specific branch; it should always just consume `sample.frame_files` / `sample.sampled_video_file` and `model_input.messages`.
 
 ## Strong Recommendations
 
@@ -244,6 +248,7 @@ Before writing the adapter, identify:
 You want the smallest direct path from:
 
 - `list[str]` absolute frame paths
+- optional absolute sampled-video path
 - `list[PromptMessage]` conversation
 
 to:
@@ -291,8 +296,10 @@ class YourModelAdapter(BaseModelAdapter):
         sample = model_input.sample
         messages = model_input.messages_as_dicts()
         frame_paths = sample.frame_files
+        video_path = sample.sampled_video_file
 
-        # convert messages + frames to model-native input
+        # choose video_path or frame_paths based on model capability
+        # convert messages + media to model-native input
         # run generation
         raw_text = ...
 
@@ -306,6 +313,8 @@ class YourModelAdapter(BaseModelAdapter):
 Typical mapping:
 
 - `sample.frame_files` -> image/frame loader for the model
+- `sample.sampled_video_file` -> video-native loader for the model
+- `sample.sampled_video_fps` -> explicit timing metadata if the model API needs it
 - `model_input.messages_as_dicts()` -> chat input or flattened text prompt
 
 Do not read GT from:
