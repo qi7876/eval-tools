@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import JUDGE_MODEL_DEFAULT, STRUCTURER_MODEL_DEFAULT
+from .protocols import ALL_PROTOCOLS
 
 
 def _default_openai_extra_body() -> dict[str, Any]:
@@ -62,6 +63,36 @@ def _resolve_path_list(base_dir: Path, raw: list[str] | None, *, default: list[s
     return [_resolve_path(base_dir, value) for value in values if value is not None]  # type: ignore[list-item]
 
 
+def _normalize_prepare_protocol_ids(value: Any) -> list[str]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("[prepare_data].protocols must be a list of strings")
+    deduplicated: list[str] = []
+    seen: set[str] = set()
+    for protocol_id in value:
+        if protocol_id not in ALL_PROTOCOLS:
+            raise ValueError(
+                "[prepare_data].protocols only supports ['main'] in this version; "
+                f"got {protocol_id!r}"
+            )
+        if protocol_id in seen:
+            continue
+        deduplicated.append(protocol_id)
+        seen.add(protocol_id)
+    if not deduplicated:
+        raise ValueError("[prepare_data].protocols must not be empty")
+    return deduplicated
+
+
+def _normalize_run_eval_protocol_id(value: Any) -> str:
+    protocol_id = str(value)
+    if protocol_id not in ALL_PROTOCOLS:
+        raise ValueError(
+            "[run_eval].protocol only supports 'main' in this version; "
+            f"got {protocol_id!r}"
+        )
+    return protocol_id
+
+
 @dataclass(slots=True)
 class ValidateDataConfig:
     data_root: Path = Path("data")
@@ -78,6 +109,8 @@ class PrepareDataConfig:
     data_root: Path = Path("data")
     prepared_root: Path = Path("prepared_data")
     protocols: list[str] = field(default_factory=lambda: ["main"])
+    media_formats: list[str] = field(default_factory=lambda: ["frames"])
+    generate_oracle_visual_media: bool = False
     workers: int = 1
 
 
@@ -170,9 +203,26 @@ def load_build_chain_manifest_config(path: Path) -> BuildChainManifestConfig:
 def load_prepare_data_config(path: Path) -> PrepareDataConfig:
     payload, base_dir = _load_toml(path)
     table = _table(payload, "prepare_data")
-    protocols = table.get("protocols", ["main"])
-    if not isinstance(protocols, list) or not all(isinstance(value, str) for value in protocols):
-        raise ValueError("[prepare_data].protocols must be a list of strings")
+    protocols = _normalize_prepare_protocol_ids(table.get("protocols", ["main"]))
+    media_formats = table.get("media_formats", ["frames"])
+    if not isinstance(media_formats, list) or not all(
+        isinstance(value, str) for value in media_formats
+    ):
+        raise ValueError("[prepare_data].media_formats must be a list of strings")
+    allowed_media_formats = {"frames", "sampled_video"}
+    deduplicated_media_formats: list[str] = []
+    seen_media_formats: set[str] = set()
+    for value in media_formats:
+        if value not in allowed_media_formats:
+            raise ValueError(
+                "[prepare_data].media_formats entries must be one of: frames, sampled_video"
+            )
+        if value in seen_media_formats:
+            continue
+        deduplicated_media_formats.append(value)
+        seen_media_formats.add(value)
+    if not deduplicated_media_formats:
+        raise ValueError("[prepare_data].media_formats must not be empty")
     config = PrepareDataConfig(
         data_root=_resolve_path(base_dir, table.get("data_root"), default="data"),  # type: ignore[arg-type]
         prepared_root=_resolve_path(
@@ -180,11 +230,20 @@ def load_prepare_data_config(path: Path) -> PrepareDataConfig:
             table.get("prepared_root"),
             default="prepared_data",
         ),  # type: ignore[arg-type]
-        protocols=list(protocols),
+        protocols=protocols,
+        media_formats=deduplicated_media_formats,
+        generate_oracle_visual_media=bool(table.get("generate_oracle_visual_media", False)),
         workers=int(table.get("workers", 1)),
     )
     if config.workers < 1:
         raise ValueError("[prepare_data].workers must be >= 1")
+    if config.generate_oracle_visual_media and (
+        "frames" not in config.media_formats or "sampled_video" not in config.media_formats
+    ):
+        raise ValueError(
+            "[prepare_data].generate_oracle_visual_media requires media_formats to include "
+            "both frames and sampled_video"
+        )
     return config
 
 
@@ -257,7 +316,7 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
             table.get("prepared_root"),
             default="prepared_data",
         ),  # type: ignore[arg-type]
-        protocol=str(table.get("protocol", "main")),
+        protocol=_normalize_run_eval_protocol_id(table.get("protocol", "main")),
         artifacts_root=_resolve_path(
             base_dir,
             table.get("artifacts_root"),

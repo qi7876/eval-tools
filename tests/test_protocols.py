@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from omnichain_eval.protocols import (
+    ALL_PROTOCOLS,
     MAIN_PROTOCOL,
     get_protocol,
     original_interval_to_sampled_interval,
@@ -59,21 +60,17 @@ def test_main_short_window_sampling_clips_query_end_to_last_frame():
     assert 1000 not in frames
 
 
-def test_experiment_d_recent_history_sampling():
-    sample = build_sample("Spatial_Imagination", q_window=(100, 450))
-    protocol = get_protocol("expd_fps_32s_4fps")
-    frames = sample_frames_for_sample(sample, protocol)
-    assert frames[-1] == 450
-    assert len(frames) <= 128
-    assert len(frames) > 100
+def test_only_main_protocol_is_registered():
+    assert set(ALL_PROTOCOLS) == {"main"}
 
 
-def test_experiment_d_recent_history_sampling_clips_query_end_to_last_frame():
-    sample = build_sample("Spatial_Imagination", q_window=(900, 1000))
-    protocol = get_protocol("expd_fps_32s_4fps")
-    frames = sample_frames_for_sample(sample, protocol)
-    assert frames[-1] == 999
-    assert 1000 not in frames
+def test_get_protocol_rejects_removed_experiment_d_protocol():
+    try:
+        get_protocol("expd_fps_32s_4fps")
+    except KeyError as exc:
+        assert "main-only" in str(exc)
+    else:
+        raise AssertionError("expected KeyError for removed Experiment D protocol")
 
 
 def test_original_interval_to_sampled_interval():

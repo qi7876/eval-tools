@@ -4,7 +4,7 @@ import pytest
 
 from omnichain_eval.cli import main
 from omnichain_eval.config import load_prepare_data_config, load_run_eval_config
-from omnichain_eval.protocols import ALL_PROTOCOLS, EXPERIMENT_D_PROTOCOLS
+from omnichain_eval.protocols import ALL_PROTOCOLS
 
 
 def test_load_run_eval_config_resolves_paths_and_judge_options(tmp_path):
@@ -271,7 +271,9 @@ def test_prepare_data_command_uses_toml_config(tmp_path, monkeypatch):
 [prepare_data]
 data_root = "data"
 prepared_root = "prepared_data"
-protocols = ["main", "expd_window_32s_2fps"]
+protocols = ["main", "main"]
+media_formats = ["frames", "sampled_video"]
+generate_oracle_visual_media = true
 workers = 4
 """.strip(),
         encoding="utf-8",
@@ -284,24 +286,21 @@ workers = 4
         prepared_root: Path,
         protocols: list[str],
         *,
+        media_formats: list[str] | None,
+        generate_oracle_visual_media: bool,
         workers: int,
     ):
         captured["data_root"] = data_root
         captured["prepared_root"] = prepared_root
         captured["protocols"] = protocols
+        captured["media_formats"] = media_formats
+        captured["generate_oracle_visual_media"] = generate_oracle_visual_media
         captured["workers"] = workers
         return [
             {
                 "num_prepared_samples": 3,
                 "protocol_id": "main",
                 "protocol_root": str(prepared_root / "main"),
-                "supported_issue_count": 0,
-                "ignored_unsupported_sample_count": 0,
-            },
-            {
-                "num_prepared_samples": 2,
-                "protocol_id": "expd_window_32s_2fps",
-                "protocol_root": str(prepared_root / "expd_window_32s_2fps"),
                 "supported_issue_count": 0,
                 "ignored_unsupported_sample_count": 0,
             },
@@ -314,7 +313,9 @@ workers = 4
     assert exit_code == 0
     assert captured["data_root"] == (tmp_path / "data").resolve()
     assert captured["prepared_root"] == (tmp_path / "prepared_data").resolve()
-    assert captured["protocols"] == ["main", "expd_window_32s_2fps"]
+    assert captured["protocols"] == ["main"]
+    assert captured["media_formats"] == ["frames", "sampled_video"]
+    assert captured["generate_oracle_visual_media"] is True
     assert captured["workers"] == 4
 
 
@@ -326,6 +327,8 @@ def test_load_prepare_data_config_parses_workers(tmp_path):
 data_root = "data"
 prepared_root = "prepared_data"
 protocols = ["main"]
+media_formats = ["frames", "sampled_video", "frames"]
+generate_oracle_visual_media = true
 workers = 8
 """.strip(),
         encoding="utf-8",
@@ -336,7 +339,52 @@ workers = 8
     assert config.data_root == (tmp_path / "data").resolve()
     assert config.prepared_root == (tmp_path / "prepared_data").resolve()
     assert config.protocols == ["main"]
+    assert config.media_formats == ["frames", "sampled_video"]
+    assert config.generate_oracle_visual_media is True
     assert config.workers == 8
+
+
+def test_load_prepare_data_config_rejects_invalid_media_formats(tmp_path):
+    config_path = tmp_path / "prepare.toml"
+    config_path.write_text(
+        """
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["main"]
+media_formats = ["frames", "raw_video"]
+workers = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[prepare_data\]\.media_formats entries must be one of: frames, sampled_video",
+    ):
+        load_prepare_data_config(config_path)
+
+
+def test_load_prepare_data_config_requires_dual_media_for_oracle_visual(tmp_path):
+    config_path = tmp_path / "prepare.toml"
+    config_path.write_text(
+        """
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["main"]
+media_formats = ["frames"]
+generate_oracle_visual_media = true
+workers = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[prepare_data\]\.generate_oracle_visual_media requires media_formats to include both frames and sampled_video",
+    ):
+        load_prepare_data_config(config_path)
 
 
 def test_load_prepare_data_config_rejects_non_positive_workers(tmp_path):
@@ -356,19 +404,63 @@ workers = 0
         load_prepare_data_config(config_path)
 
 
+def test_load_prepare_data_config_rejects_removed_experiment_d_protocol(tmp_path):
+    config_path = tmp_path / "prepare.toml"
+    config_path.write_text(
+        """
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["main", "expd_window_32s_2fps"]
+workers = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[prepare_data\]\.protocols only supports \['main'\] in this version",
+    ):
+        load_prepare_data_config(config_path)
+
+
+def test_load_run_eval_config_rejects_removed_experiment_d_protocol(tmp_path):
+    config_path = tmp_path / "run_eval.toml"
+    config_path.write_text(
+        """
+[run_eval]
+prepared_root = "prepared_data"
+protocol = "expd_window_32s_2fps"
+prompt_root = "prompts/benchmark_v1"
+adapter = "mock"
+
+[judge]
+prompt_root = "prompts/judge_v1"
+
+[structurer]
+backend = "static-parse"
+prompt_root = "prompts/structurer_v1"
+""".strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"\[run_eval\]\.protocol only supports 'main' in this version",
+    ):
+        load_run_eval_config(config_path)
+
+
 EXAMPLE_CONFIG_ROOT = Path(__file__).resolve().parent.parent / "configs" / "examples"
 
 
-def test_example_prepare_configs_split_main_and_experiment_d():
+def test_example_prepare_config_targets_main_only():
     main_config = load_prepare_data_config(EXAMPLE_CONFIG_ROOT / "prepare_main.toml")
-    experiment_d_config = load_prepare_data_config(
-        EXAMPLE_CONFIG_ROOT / "prepare_experiment_d.toml"
-    )
 
     assert main_config.protocols == ["main"]
-    assert set(experiment_d_config.protocols) == set(EXPERIMENT_D_PROTOCOLS)
-    assert main_config.prepared_root == experiment_d_config.prepared_root
-    assert main_config.data_root == experiment_d_config.data_root
+    assert main_config.media_formats == ["frames", "sampled_video"]
+    assert main_config.generate_oracle_visual_media is True
+    assert not (EXAMPLE_CONFIG_ROOT / "prepare_experiment_d.toml").exists()
 
 
 def test_example_run_eval_configs_cover_all_protocols_with_dashscope_settings():

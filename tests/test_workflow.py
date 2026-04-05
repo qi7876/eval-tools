@@ -2,6 +2,7 @@ import json
 import shutil
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from omnichain_eval.cli import main
@@ -117,16 +118,11 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
     build_prepared_data(
         FIXTURE_ROOT,
         prepared_root,
-        ["main", "expd_window_32s_2fps"],
+        ["main"],
     )
 
     main_samples = load_prepared_samples(prepared_root, "main")
-    expd_samples = load_prepared_samples(prepared_root, "expd_window_32s_2fps")
     assert len(main_samples) == 4
-    assert {sample.task_name for sample in expd_samples} == {
-        "Continuous_Actions_Caption",
-        "Spatial_Imagination",
-    }
 
     adapter = MockAdapter()
     prompt_pack = load_prompt_pack(PROMPT_ROOT)
@@ -163,8 +159,8 @@ def test_end_to_end_prepare_and_eval(monkeypatch, tmp_path):
 
     pairs = load_chain_pairs(chain_path)
     chain_summary = summarize_experiment_b(pairs, evaluation["records_by_sample_id"])
-    assert chain_summary["chain_success"] == 1.0
-    assert chain_summary["chain_success_wo_track"] == 1.0
+    assert chain_summary["base"]["chain_success"] == 1.0
+    assert chain_summary["base"]["chain_success_wo_track"] == 1.0
 
 
 def test_prepare_data_clips_q_window_end_equal_to_total_frames(monkeypatch, tmp_path):
@@ -235,6 +231,104 @@ def test_prepare_data_writes_normalized_coordinate_metadata(monkeypatch, tmp_pat
     assert prepared_sample.metadata["frame_height"] > 0
 
 
+def test_prepare_data_writes_sampled_video_when_requested(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+
+    def fake_write_sampled_video(output_path: Path, frame_images, *, sampled_video_fps: float):
+        assert frame_images
+        output_path.write_bytes(b"fake mp4")
+        assert sampled_video_fps > 0
+
+    monkeypatch.setattr(
+        "omnichain_eval.prepare._write_sampled_video",
+        fake_write_sampled_video,
+    )
+
+    prepared_root = tmp_path / "prepared"
+    build_prepared_data(
+        FIXTURE_ROOT,
+        prepared_root,
+        ["main"],
+        media_formats=["frames", "sampled_video"],
+    )
+
+    prepared_samples = load_prepared_samples(prepared_root, "main")
+    multi_frame_sample = next(sample for sample in prepared_samples if len(sample.frame_files) > 1)
+    single_frame_sample = next(sample for sample in prepared_samples if sample.task_name == "Scoreboard_Single")
+
+    assert multi_frame_sample.sampled_video_file is not None
+    assert Path(multi_frame_sample.sampled_video_file).is_absolute()
+    assert Path(multi_frame_sample.sampled_video_file).exists()
+    assert multi_frame_sample.sampled_video_fps is not None
+    assert multi_frame_sample.sampled_video_fps > 0
+    assert single_frame_sample.sampled_video_file is None
+    assert single_frame_sample.sampled_video_fps is None
+
+    build_manifest = read_json(prepared_root / "main" / "build_manifest.json")
+    assert build_manifest["media_formats"] == ["frames", "sampled_video"]
+
+
+def test_prepare_data_writes_oracle_visual_media_when_requested(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+
+    def fake_write_sampled_video(output_path: Path, frame_images, *, sampled_video_fps: float):
+        assert frame_images
+        output_path.write_bytes(b"fake mp4")
+        assert sampled_video_fps > 0
+
+    monkeypatch.setattr(
+        "omnichain_eval.prepare._write_sampled_video",
+        fake_write_sampled_video,
+    )
+
+    prepared_root = tmp_path / "prepared"
+    build_prepared_data(
+        FIXTURE_ROOT,
+        prepared_root,
+        ["main"],
+        media_formats=["frames", "sampled_video"],
+        generate_oracle_visual_media=True,
+    )
+
+    prepared_samples = load_prepared_samples(prepared_root, "main")
+    oracle_upstream_sample = next(
+        sample for sample in prepared_samples if sample.task_name == "Continuous_Actions_Caption"
+    )
+    non_oracle_sample = next(
+        sample for sample in prepared_samples if sample.task_name == "Spatial_Imagination"
+    )
+
+    assert oracle_upstream_sample.oracle_visual_frame_files
+    assert all(Path(path).is_absolute() for path in oracle_upstream_sample.oracle_visual_frame_files)
+    assert all(Path(path).exists() for path in oracle_upstream_sample.oracle_visual_frame_files)
+    assert oracle_upstream_sample.oracle_visual_sampled_video_file is not None
+    assert Path(oracle_upstream_sample.oracle_visual_sampled_video_file).is_absolute()
+    assert Path(oracle_upstream_sample.oracle_visual_sampled_video_file).exists()
+    assert non_oracle_sample.oracle_visual_frame_files == []
+    assert non_oracle_sample.oracle_visual_sampled_video_file is None
+
+    build_manifest = read_json(prepared_root / "main" / "build_manifest.json")
+    assert build_manifest["generate_oracle_visual_media"] is True
+
+
+def test_prepare_data_fails_loudly_without_pyav(monkeypatch, tmp_path):
+    monkeypatch.setattr("omnichain_eval.prepare.av", None)
+
+    with pytest.raises(RuntimeError, match="prepared-data video decoding/encoding requires PyAV"):
+        build_prepared_data(
+            FIXTURE_ROOT,
+            tmp_path / "prepared",
+            ["main"],
+            media_formats=["frames"],
+        )
+
+
 def test_load_prepared_samples_rejects_legacy_coordinate_system(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "omnichain_eval.prepare.decode_selected_frames",
@@ -278,35 +372,38 @@ def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
             component_pass={"judge_pass": 1},
         ),
     }
-    oracle_pair_results = {
-        "down#1|up#1": {
-            "upstream": _evaluation_record(
-                "up#1",
-                "Continuous_Actions_Caption",
-                component_pass={"tracking_pass": 1, "judge_pass": 1},
-            ),
-            "downstream": _evaluation_record(
-                "down#1",
-                "Spatial_Imagination",
-                component_pass={"judge_pass": 1},
-            ),
+    oracle_variant_pair_results = {
+        "language": {
+            "down#1|up#1": {
+                "upstream": _evaluation_record(
+                    "up#1",
+                    "Continuous_Actions_Caption",
+                    component_pass={"tracking_pass": 1, "judge_pass": 1},
+                ),
+                "downstream": _evaluation_record(
+                    "down#1",
+                    "Spatial_Imagination",
+                    component_pass={"judge_pass": 1},
+                ),
+            }
         }
     }
 
     chain_summary = summarize_experiment_b(
         pairs,
         records_by_sample_id,
-        oracle_pair_results=oracle_pair_results,
+        oracle_variant_pair_results=oracle_variant_pair_results,
     )
 
-    assert chain_summary["understanding_acc"] == 0.0
-    assert chain_summary["reasoning_acc"] == 1.0
-    assert chain_summary["chain_success"] == 0.0
-    assert chain_summary["chain_success_wo_track"] == 1.0
-    assert chain_summary["understanding_acc_oracle"] == 1.0
-    assert chain_summary["reasoning_acc_oracle"] == 1.0
-    assert chain_summary["chain_success_wo_track_oracle"] == 1.0
-    assert "chain_success_oracle" not in chain_summary
+    assert chain_summary["base"]["understanding_acc"] == 0.0
+    assert chain_summary["base"]["reasoning_acc"] == 1.0
+    assert chain_summary["base"]["chain_success"] == 0.0
+    assert chain_summary["base"]["chain_success_wo_track"] == 1.0
+    assert chain_summary["oracle_language"]["understanding_acc"] == 1.0
+    assert chain_summary["oracle_language"]["reasoning_acc"] == 1.0
+    assert chain_summary["oracle_language"]["chain_success_wo_track"] == 1.0
+    assert chain_summary["oracle_visual"]["num_pending_chain_samples"] == 1
+    assert chain_summary["oracle_language_visual"]["num_pending_chain_samples"] == 1
 
 
 def test_unsupported_tasks_are_ignored_in_validation_prepare_and_chain(monkeypatch, tmp_path):

@@ -48,11 +48,6 @@ class ProtocolSpec:
     protocol_id: str
     description: str
     frame_budget: int
-    supports_stg: bool
-    include_single_frame_tasks: bool = True
-    history_seconds: int | None = None
-    target_fps: float | None = None
-    strategy: str = "main"
 
     def to_dict(self) -> dict[str, Any]:
         return to_jsonable(self)
@@ -78,6 +73,10 @@ class PreparedSample:
     a_window: tuple[int, int] | None = None
     source_tracking_path: str | None = None
     upstream_annotation_id: str | None = None
+    sampled_video_file: str | None = None
+    sampled_video_fps: float | None = None
+    oracle_visual_frame_files: list[str] = field(default_factory=list)
+    oracle_visual_sampled_video_file: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -107,6 +106,14 @@ class PreparedSample:
             a_window=tuple(payload["a_window"]) if payload.get("a_window") else None,
             source_tracking_path=payload.get("source_tracking_path"),
             upstream_annotation_id=payload.get("upstream_annotation_id"),
+            sampled_video_file=payload.get("sampled_video_file"),
+            sampled_video_fps=(
+                float(payload["sampled_video_fps"])
+                if payload.get("sampled_video_fps") is not None
+                else None
+            ),
+            oracle_visual_frame_files=list(payload.get("oracle_visual_frame_files", [])),
+            oracle_visual_sampled_video_file=payload.get("oracle_visual_sampled_video_file"),
             metadata=payload.get("metadata", {}),
         )
 

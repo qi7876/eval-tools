@@ -1,5 +1,7 @@
 [prepare_data]
 data_root = "/data/public_data/mllmbenchmark"
 prepared_root = "/data/public_data/mllmbenchmark_prepared"
+media_formats = ["frames", "sampled_video"]
+generate_oracle_visual_media = true
 workers = 8
 protocols = ["main"]

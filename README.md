@@ -18,7 +18,7 @@ The current implementation includes:
 
 - Raw dataset validation
 - Chain manifest generation for Experiment B
-- Prepared-data generation for the main fixed-budget protocol and Experiment D fixed-budget ablations
+- Prepared-data generation for the main fixed-budget protocol
 - Live adapter-based evaluation
 - Framework-owned prompt building, chain-history injection, structured extraction, and scoring
 - LLM-as-a-judge integration through an OpenAI-compatible API
@@ -47,7 +47,7 @@ Key files:
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py): experiment orchestration
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py): adapter interface
 - `prompts/benchmark_v1/`: task-specific inference prompt pack
-- `prompts/benchmark_oracle_v1/`: OracleTrack upstream inference prompt pack
+- `prompts/benchmark_oracle_v1/`: OracleTrack upstream inference prompt base directory with `language/`, `visual/`, and `language_visual/` variants
 - `prompts/structurer_v1/`: task-specific structurer prompt pack
 - `prompts/structurer_oracle_v1/`: OracleTrack upstream structurer prompt pack
 - `prompts/judge_v1/`: task-specific judge prompt pack
@@ -59,7 +59,8 @@ Prompt-template convention:
 - benchmark, structurer, and judge all send user-only prompts at runtime
 - `prompts/benchmark_v1/` and `prompts/structurer_v1/` each contain the 10 benchmark tasks
 - `prompts/judge_v1/` contains the 9 judge-evaluated tasks; `Spatial_Temporal_Grounding` is rule-based and does not use judge prompts
-- `prompts/benchmark_oracle_v1/` and `prompts/structurer_oracle_v1/` only cover OracleTrack upstream reruns for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding`
+- `prompts/benchmark_oracle_v1/` only covers OracleTrack upstream reruns for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding`, and is split into `language/`, `visual/`, and `language_visual/` subpacks
+- `prompts/structurer_oracle_v1/` only covers OracleTrack upstream structuring for `Continuous_Actions_Caption` and `Spatial_Temporal_Grounding`
 - `configs/examples/`: example TOML configs for common workflows
 
 Generated directories:
@@ -86,7 +87,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev
 Notes:
 
 - `UV_CACHE_DIR=/tmp/uv-cache` is recommended in this environment because the default cache path may be unwritable.
-- Video decoding uses PyAV if available, otherwise OpenCV fallback.
+- Video decoding uses PyAV only. If PyAV is unavailable, `prepare-data` fails loudly.
 
 ## Dataset Assumptions
 
@@ -150,15 +151,8 @@ Example config files shipped with the repository:
 
 - [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate-data and build-chain-manifest
 - [configs/examples/prepare_main.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_main.toml): prepare-data for `main`
-- [configs/examples/prepare_experiment_d.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_experiment_d.toml): prepare-data for all Experiment D protocols
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml): mock smoke-test evaluation
 - [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml): live `run-eval` example for `main`
-- [configs/examples/run_eval_expd_window_16s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_16s_2fps.toml): live `run-eval` example for `expd_window_16s_2fps`
-- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml): live `run-eval` example for `expd_window_32s_2fps`
-- [configs/examples/run_eval_expd_window_64s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_64s_2fps.toml): live `run-eval` example for `expd_window_64s_2fps`
-- [configs/examples/run_eval_expd_fps_32s_1fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_1fps.toml): live `run-eval` example for `expd_fps_32s_1fps`
-- [configs/examples/run_eval_expd_fps_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_2fps.toml): live `run-eval` example for `expd_fps_32s_2fps`
-- [configs/examples/run_eval_expd_fps_32s_4fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_4fps.toml): live `run-eval` example for `expd_fps_32s_4fps`
 
 Supported top-level sections:
 
@@ -283,23 +277,16 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   --config configs/examples/prepare_main.toml
 ```
 
-Build all Experiment D caches:
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  prepare-data \
-  --config configs/examples/prepare_experiment_d.toml
-```
-
-The shipped examples intentionally separate `main` and Experiment D cache generation.
-Both prepare configs point to the same `prepared_root`, so the generated caches still coexist under one prepared-data tree.
+The shipped example config builds the reusable `main` cache under one prepared-data tree.
 
 What it does:
 
 - loads raw samples
-- applies the protocol-specific sampling rule
+- applies the `main` protocol sampling rule
 - decodes the required frames
 - writes each sample as a prepared bundle
+- can additionally encode a sampled MP4 from the sampled frames when `[prepare_data].media_formats` includes `sampled_video`
+- can additionally generate Oracle visual-overlay media when `[prepare_data].generate_oracle_visual_media = true`
 - parallelizes work across videos when `[prepare_data].workers > 1`
 
 Important:
@@ -308,6 +295,9 @@ Important:
 - unsupported tasks are ignored and recorded in protocol metadata
 - supported-task validation errors still fail the command before cache generation
 - `workers` controls video-level thread concurrency inside one protocol; protocols are still built sequentially
+- the shipped example prepare configs use `media_formats = ["frames", "sampled_video"]`
+- `configs/examples/prepare_main.toml` also enables `generate_oracle_visual_media = true` for Experiment B Oracle visual variants
+- sampled videos are rebuilt from the sampled frames only, use H.264 (`libx264`), contain no audio stream, and are generated only for multi-frame samples
 
 The cache is sample-centric. The runtime evaluation path reads from the configured `prepared_root` instead of decoding raw videos again.
 
@@ -331,18 +321,12 @@ After each run, the framework recomputes the latest aggregate metrics and rewrit
 Currently supported:
 
 - `main`
-- `expd_window_16s_2fps`
-- `expd_window_32s_2fps`
-- `expd_window_64s_2fps`
-- `expd_fps_32s_1fps`
-- `expd_fps_32s_2fps`
-- `expd_fps_32s_4fps`
 
 Notes:
 
 - `main` supports all benchmark tasks, including STG
-- Experiment D protocols exclude STG by design
 - Experiment C `model-native` is not prebuilt in this version
+- The protocol shell is still kept in the framework, but current prepared-data support is `main` only
 
 ## Prepared Data Directory Layout
 
@@ -362,6 +346,13 @@ After running `prepare-data` with a config whose `[prepare_data].protocols` incl
             0000.jpg
             0001.jpg
             ...
+          sampled_video.mp4
+          oracle_visual/
+            frames/
+              0000.jpg
+              0001.jpg
+              ...
+            sampled_video.mp4
 ```
 
 ### `index.jsonl`
@@ -390,10 +381,20 @@ Each bundle stores a serialized `PreparedSample`. Important fields include:
 - `sampled_frames_original`
 - `sampled_to_original`
 - `frame_files`
+- `sampled_video_file`
+- `sampled_video_fps`
+- `oracle_visual_frame_files`
+- `oracle_visual_sampled_video_file`
 - `reference_payload`
 - `q_window` or `a_window`
 - `upstream_annotation_id` when present
 - `metadata`
+
+`frame_files` and `sampled_video_file` are stored as bundle-relative paths in `manifest.json`.
+At runtime, `load_prepared_samples()` rewrites them to absolute paths.
+`sampled_video_file` is present only for multi-frame samples when sampled-video generation was enabled.
+`sampled_video_fps` records the effective playback rate implied by the sampled frame spacing and is used both by adapters and by benchmark prompt rendering.
+When Oracle visual media generation is enabled, Oracle upstream samples also include `oracle_visual_frame_files` and `oracle_visual_sampled_video_file`.
 
 For segment tasks, `reference_payload` contains both original-frame and sampled-frame segments.
 
@@ -447,7 +448,9 @@ prompt_root = "prompts/structurer_v1"
 The adapter class must be importable in the current Python environment.
 `[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 10 task Markdown templates.
 `[structurer].prompt_root` is also required and must point to the structurer prompt pack.
-If `[run_eval].enable_oracle_track = true`, then `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` are also required and must point to the OracleTrack upstream prompt packs.
+If `[run_eval].enable_oracle_track = true`, then `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` are also required.
+`[run_eval].oracle_prompt_root` must point to the Oracle prompt base directory containing `language/`, `visual/`, and `language_visual/`.
+`[structurer].oracle_prompt_root` must point to the Oracle upstream structurer prompt pack.
 
 ### Adapter Interface
 
@@ -488,13 +491,19 @@ Inside `model_input.sample`, common fields include:
 - `sampled_frames_original`
 - `sampled_to_original`
 - `frame_files`
+- `sampled_video_file`
+- `sampled_video_fps`
 - `reference_payload`
 - `q_window` or `a_window`
 - `metadata`
 
 In normal model adapters you should ignore `model_input.sample.reference_payload`, since it is GT. It is present because the framework also supports the built-in `mock` adapter and oracle-tracking workflows.
 
-In practice, adapters usually read frame paths from `model_input.sample.frame_files` and prompts from `model_input.messages`.
+In practice, adapters read prompts from `model_input.messages` and choose media from `model_input.sample`:
+
+- use `frame_files` for image-native models
+- use `sampled_video_file` for video-native models when it is present
+- use `sampled_video_fps` if the model API needs explicit timing metadata
 
 For chain-downstream `Spatial_Imagination`, the framework automatically builds the final message list as:
 
@@ -602,15 +611,21 @@ class MyVideoAdapter(BaseModelAdapter):
         self,
         model_input: ModelInput,
     ) -> str:
-        image_paths = [Path(path) for path in model_input.sample.frame_files]
-        messages = model_input.messages_as_dicts()
         sample = model_input.sample
+        messages = model_input.messages_as_dicts()
+        image_paths = [Path(path) for path in sample.frame_files]
+        video_path = Path(sample.sampled_video_file) if sample.sampled_video_file else None
 
         # Replace this block with your real model call.
         # Return the raw model answer as a string.
         if sample.task_name == "Scoreboard_Single":
             return '{"text": "The score is 1-0.", "bbox": [52, 833, 521, 907]}'
 
+        if video_path is not None:
+            _ = video_path
+        else:
+            _ = image_paths
+        _ = messages
         return '{"text": "placeholder"}'
 ```
 
@@ -793,7 +808,10 @@ Important:
 
 - resumability depends on writing into the same run directory
 - in practice you should set a fixed `[run_eval].run_name` for long-running jobs
-- OracleTrack pair evaluation is also resumed through `oracle_pair_results.jsonl`
+- OracleTrack pair evaluation is resumed independently through:
+  `oracle_language_pair_results.jsonl`,
+  `oracle_visual_pair_results.jsonl`,
+  and `oracle_language_visual_pair_results.jsonl`
 
 ## Running Experiment A
 
@@ -868,20 +886,21 @@ Then set `[run_eval].chain_manifest` in the TOML used by `run-eval`:
 chain_manifest = "artifacts/chain_pairs.jsonl"
 ```
 
-The current runner computes:
+The current runner writes `experiment_b` as grouped summaries:
 
-- understanding accuracy
-- reasoning accuracy
-- chain success
-- chain success (w/o track)
+- `base`: understanding accuracy, reasoning accuracy, chain success, chain success (w/o track)
+- `oracle_language`: text-only Oracle rerun with language GT tracking injection
+- `oracle_visual`: text-only Oracle rerun with visual GT tracking injection
+- `oracle_language_visual`: text-only Oracle rerun with both injections
 
-If oracle rerun information is available, it also computes:
+Each Oracle group reports:
 
-- `understanding_acc_oracle`
-- `reasoning_acc_oracle`
-- `chain_success_wo_track_oracle`
-
-There is intentionally no `chain_success_oracle` field. Under OracleTrack, tracking is replaced by GT, so the only Oracle chain-level metric is the text-only `chain_success_wo_track_oracle`.
+- `num_chain_samples`
+- `num_scored_chain_samples`
+- `num_pending_chain_samples`
+- `understanding_acc`
+- `reasoning_acc`
+- `chain_success_wo_track`
 
 ## OracleTrack
 
@@ -906,8 +925,11 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 What the framework does:
 
 - reruns the upstream and downstream pair through the adapter
-- uses `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` as dedicated OracleTrack prompt packs
-- injects GT tracking directly into the upstream Oracle prompt body in `normalized_1000` coordinates, while keeping the prompt otherwise close to the normal template
+- uses `[run_eval].oracle_prompt_root` as a 3-variant Oracle prompt base directory and `[structurer].oracle_prompt_root` as the dedicated Oracle upstream structurer prompt pack
+- runs three Oracle variants: `language`, `visual`, and `language_visual`
+- in `language`, injects GT tracking directly into the upstream Oracle prompt body in `normalized_1000` coordinates
+- in `visual`, switches the upstream media to prepared Oracle visual-overlay frames/video with GT tracking boxes drawn on them
+- in `language_visual`, applies both injections together
 - tells the model that the subject has already been identified by GT tracking, so the Oracle upstream output should omit tracking boxes
 - rebuilds downstream chain history from the full rendered upstream prompt plus the upstream raw answer
 - scores Oracle upstream samples only on the non-tracking component, then reports Oracle text-only chain metrics in Experiment B
@@ -965,19 +987,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
-### Build all Experiment D fixed-budget caches in advance
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
-```
-
-### Build both main and Experiment D caches
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_main.toml
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
-```
-
 ## Current Limitations
 
 - The repository does not yet include concrete adapters for the 10 baseline models.
@@ -990,16 +999,16 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 2. Run `prepare-data` for the protocol(s) you need.
 3. Implement a `BaseModelAdapter` subclass in your own importable module.
 4. Point `[run_eval].prompt_root` to your inference prompt pack and `[structurer].prompt_root` to your structurer prompt pack.
-5. Make the adapter consume `model_input.sample`, `model_input.messages`, and the prepared frame bundle referenced by the sample.
+5. Make the adapter consume `model_input.sample`, `model_input.messages`, and the prepared media referenced by the sample.
 6. Return the raw model answer as a string.
 7. Run `run-eval --config your_model.toml` on `main`.
 8. Set `[run_eval].chain_manifest` to get Experiment B metrics.
 9. If needed, set `[run_eval].enable_oracle_track = true` and let the framework run OracleTrack reruns.
-10. When the model is stable, create separate TOML files for the Experiment D protocol ids and reuse the same prepared cache root.
+10. When Experiment C `model-native` is implemented later, add a separate TOML for that protocol instead of overloading the `main` config.
 
 If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, prompt construction, chain accounting, structured extraction, scoring, and summary generation remain inside the framework.
 
 In practice the adapter only owns two things:
 
-- how to turn `model_input.sample.frame_files` plus `model_input.messages` into a real model call
+- how to turn `model_input.sample.frame_files` or `model_input.sample.sampled_video_file` plus `model_input.messages` into a real model call
 - how to return the model's raw answer as a string

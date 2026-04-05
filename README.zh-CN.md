@@ -15,7 +15,7 @@
 
 - 原始数据校验
 - Experiment B 所需 chain manifest 生成
-- 主协议 `main` 和 Experiment D 固定预算协议的 prepared-data 构建
+- 主协议 `main` 的 prepared-data 构建
 - 在线 adapter 模式评测
 - 框架统一负责 prompt 构造、链式历史注入、结构化抽取与评分
 - 指标计算与样本级 pass/fail 判断
@@ -45,7 +45,7 @@
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)：实验编排
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py)：模型 adapter 接口
 - `prompts/benchmark_v1/`：任务级 inference prompt 模板
-- `prompts/benchmark_oracle_v1/`：OracleTrack 上游 inference prompt 模板
+- `prompts/benchmark_oracle_v1/`：OracleTrack 上游 inference prompt 基目录，内部包含 `language/`、`visual/`、`language_visual/` 三套模板
 - `prompts/structurer_v1/`：任务级 structurer prompt 模板
 - `prompts/structurer_oracle_v1/`：OracleTrack 上游 structurer prompt 模板
 - `prompts/judge_v1/`：任务级 judge prompt 模板目录
@@ -57,7 +57,8 @@
 - benchmark、structurer、judge 在运行时都只发送 user prompt
 - `prompts/benchmark_v1/` 和 `prompts/structurer_v1/` 都覆盖 10 个 benchmark 任务
 - `prompts/judge_v1/` 覆盖 9 个需要 judge 的任务；`Spatial_Temporal_Grounding` 是规则评分，不走 judge prompt
-- `prompts/benchmark_oracle_v1/` 和 `prompts/structurer_oracle_v1/` 只覆盖 OracleTrack 上游 rerun 的 `Continuous_Actions_Caption` 与 `Spatial_Temporal_Grounding`
+- `prompts/benchmark_oracle_v1/` 只覆盖 OracleTrack 上游 rerun 的 `Continuous_Actions_Caption` 与 `Spatial_Temporal_Grounding`，并按 `language/`、`visual/`、`language_visual/` 三个子目录组织
+- `prompts/structurer_oracle_v1/` 只覆盖 OracleTrack 上游 structurer
 - `configs/examples/`：常见流程的 TOML 示例配置
 
 运行后产生的目录：
@@ -84,7 +85,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv sync --extra dev
 说明：
 
 - 在当前环境下建议显式设置 `UV_CACHE_DIR=/tmp/uv-cache`，避免默认缓存目录不可写。
-- 视频解码优先使用 PyAV；如果环境里没有 PyAV，则自动回退到 OpenCV。
+- 视频解码只使用 PyAV；如果环境里没有 PyAV，`prepare-data` 会直接报错。
 
 ## 数据集假设
 
@@ -156,15 +157,8 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 
 - [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml)：数据校验与 chain manifest 生成
 - [configs/examples/prepare_main.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_main.toml)：只构建 `main` 协议缓存
-- [configs/examples/prepare_experiment_d.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_experiment_d.toml)：构建全部 Experiment D 协议缓存
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)：mock smoke test 评测
 - [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml)：`main` 协议在线评测示例
-- [configs/examples/run_eval_expd_window_16s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_16s_2fps.toml)：`expd_window_16s_2fps` 在线评测示例
-- [configs/examples/run_eval_expd_window_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_32s_2fps.toml)：`expd_window_32s_2fps` 在线评测示例
-- [configs/examples/run_eval_expd_window_64s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_window_64s_2fps.toml)：`expd_window_64s_2fps` 在线评测示例
-- [configs/examples/run_eval_expd_fps_32s_1fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_1fps.toml)：`expd_fps_32s_1fps` 在线评测示例
-- [configs/examples/run_eval_expd_fps_32s_2fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_2fps.toml)：`expd_fps_32s_2fps` 在线评测示例
-- [configs/examples/run_eval_expd_fps_32s_4fps.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_expd_fps_32s_4fps.toml)：`expd_fps_32s_4fps` 在线评测示例
 
 支持的顶层 section：
 
@@ -305,22 +299,15 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
   --config configs/examples/prepare_main.toml
 ```
 
-### 构建全部 Experiment D 缓存
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
-  prepare-data \
-  --config configs/examples/prepare_experiment_d.toml
-```
-
-现在仓库内的示例配置已经明确把 `main` 和 Experiment D 的缓存构建拆开了。
-这两个 prepare 示例依然共用同一个 `prepared_root`，因此不同协议的缓存仍会写入同一棵 prepared-data 目录。
+仓库内提供的示例配置会直接构建可复用的 `main` prepared cache。
 
 这个命令会：
 
-- 按协议对 sample 进行采样
+- 按 `main` 协议对 sample 进行采样
 - 解码相应视频帧
 - 把每个 sample 写成一个独立 bundle
+- 当 `[prepare_data].media_formats` 包含 `sampled_video` 时，再额外基于采样帧编码一个 sampled MP4
+- 当 `[prepare_data].generate_oracle_visual_media = true` 时，再额外生成 Oracle 视觉注入所需的画框版媒体
 - 存储 sampled-to-original 映射
 - 存储任务评测需要的 GT sidecar
 - 当 `[prepare_data].workers > 1` 时，会按视频并发处理
@@ -331,6 +318,9 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 - 不支持的任务会被忽略，并记录到协议元数据里
 - 支持任务本身如果有校验错误，`prepare-data` 仍然会直接失败
 - `workers` 控制单个 protocol 内部按视频并发的线程数；不同 protocol 之间仍然串行构建
+- 仓库自带的 prepare 示例都使用 `media_formats = ["frames", "sampled_video"]`
+- `configs/examples/prepare_main.toml` 还会开启 `generate_oracle_visual_media = true`，用于 Experiment B 的 Oracle 视觉/联合实验
+- sampled video 只会从已经采样好的帧重编码，不会直接截原视频；只给多帧 sample 生成，编码为无音频 H.264 (`libx264`)
 
 ### 为什么要先构建 prepared data
 
@@ -348,18 +338,12 @@ prepared-data 方案解决了这些问题。
 当前可用的协议：
 
 - `main`
-- `expd_window_16s_2fps`
-- `expd_window_32s_2fps`
-- `expd_window_64s_2fps`
-- `expd_fps_32s_1fps`
-- `expd_fps_32s_2fps`
-- `expd_fps_32s_4fps`
 
 说明：
 
 - `main` 支持全部任务，包括 STG
-- Experiment D 协议按规范不包含 STG
 - Experiment C 的 `model-native` 当前没有统一 prepared-data 形式
+- 框架仍保留了协议壳层，但当前 prepared-data 只支持 `main`
 
 ## Prepared Data 的目录结构
 
@@ -379,6 +363,13 @@ prepared-data 方案解决了这些问题。
             0000.jpg
             0001.jpg
             ...
+          sampled_video.mp4
+          oracle_visual/
+            frames/
+              0000.jpg
+              0001.jpg
+              ...
+            sampled_video.mp4
 ```
 
 ### `index.jsonl`
@@ -407,10 +398,19 @@ prepared-data 方案解决了这些问题。
 - `sampled_frames_original`
 - `sampled_to_original`
 - `frame_files`
+- `sampled_video_file`
+- `sampled_video_fps`
+- `oracle_visual_frame_files`
+- `oracle_visual_sampled_video_file`
 - `reference_payload`
 - `q_window` 或 `a_window`
 - `upstream_annotation_id`
 - `metadata`
+
+`manifest.json` 里保存的 `frame_files` 和 `sampled_video_file` 都是相对 bundle 的路径，运行时 `load_prepared_samples()` 会统一改写成绝对路径。
+`sampled_video_file` 只会在多帧 sample 且 prepare 时启用了 sampled video 时出现。
+`sampled_video_fps` 表示采样后这段输入对应的大致播放帧率，adapter 和 benchmark prompt 都可以直接使用它。
+如果 prepare 时启用了 Oracle 视觉媒体生成，那么 Oracle 上游样本还会额外带上 `oracle_visual_frame_files` 和 `oracle_visual_sampled_video_file`。
 
 ### `reference_payload` 的作用
 
@@ -491,7 +491,9 @@ prompt_root = "prompts/structurer_v1"
 
 `[run_eval].prompt_root` 现在是必填项，必须指向一个包含 10 个任务 Markdown 模板的 prompt 目录。
 `[structurer].prompt_root` 也是必填项，必须指向 structurer prompt 模板目录。
-如果 `[run_eval].enable_oracle_track = true`，那么 `[run_eval].oracle_prompt_root` 和 `[structurer].oracle_prompt_root` 也都是必填项，并且必须指向 OracleTrack 上游 prompt 模板目录。
+如果 `[run_eval].enable_oracle_track = true`，那么 `[run_eval].oracle_prompt_root` 和 `[structurer].oracle_prompt_root` 也都是必填项。
+其中 `[run_eval].oracle_prompt_root` 必须指向包含 `language/`、`visual/`、`language_visual/` 三个子目录的 Oracle prompt 基目录。
+`[structurer].oracle_prompt_root` 则指向 Oracle 上游 structurer prompt 目录。
 
 ### adapter 接口
 
@@ -532,16 +534,23 @@ adapter 现在会收到一个 `ModelInput`。常用字段包括：
 - `sampled_frames_original`
 - `sampled_to_original`
 - `frame_files`
+- `sampled_video_file`
+- `sampled_video_fps`
 - `reference_payload`
 - `q_window`
 - `a_window`
 - `metadata`
 
-通常你直接从 `model_input.sample.frame_files` 取图像绝对路径，并把 `model_input.messages` 送给模型即可。
+通常你把 `model_input.messages` 直接送给模型，然后根据模型能力从 `model_input.sample` 里选媒体输入：
+
+- 图像模型使用 `frame_files`
+- 原生视频模型优先使用 `sampled_video_file`
+- 如果模型接口需要显式的时间信息，可以直接读取 `sampled_video_fps`
 
 说明：
 
 - `model_input.sample.frame_files` 是已经展开后的绝对路径
+- `model_input.sample.sampled_video_file` 如果存在，也已经是绝对路径
 - 每张图已经按采样顺序排好
 - sampled 索引就是 `frame_files` 的顺序索引
 
@@ -646,14 +655,20 @@ class MyVideoAdapter(BaseModelAdapter):
         self,
         model_input: ModelInput,
     ) -> str:
-        image_paths = [Path(path) for path in model_input.sample.frame_files]
-        messages = model_input.messages_as_dicts()
         sample = model_input.sample
+        messages = model_input.messages_as_dicts()
+        image_paths = [Path(path) for path in sample.frame_files]
+        video_path = Path(sample.sampled_video_file) if sample.sampled_video_file else None
 
         # 在这里替换成你的真实模型调用逻辑
         if sample.task_name == "Scoreboard_Single":
             return '{"text": "The score is 1-0.", "bbox": [100, 900, 1000, 980]}'
 
+        if video_path is not None:
+            _ = video_path
+        else:
+            _ = image_paths
+        _ = messages
         return '{"text": "placeholder"}'
 ```
 
@@ -836,7 +851,11 @@ prompt_root = "prompts/judge_v1"
 
 - 断点续测依赖于写入同一个 run 目录
 - 实际使用时，建议为长任务显式设置固定的 `[run_eval].run_name`
-- OracleTrack 的 pair 级评测也会通过 `oracle_pair_results.jsonl` 断点恢复
+- OracleTrack 的 pair 级评测会分别通过
+  `oracle_language_pair_results.jsonl`、
+  `oracle_visual_pair_results.jsonl`、
+  `oracle_language_visual_pair_results.jsonl`
+  独立断点恢复
 
 ## 运行 Experiment A
 
@@ -911,20 +930,21 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 chain_manifest = "artifacts/chain_pairs.jsonl"
 ```
 
-当前会计算：
+当前 `experiment_b` 会按分组输出：
 
-- understanding accuracy
-- reasoning accuracy
-- chain success
-- chain success (w/o track)
+- `base`：understanding accuracy、reasoning accuracy、chain success、chain success (w/o track)
+- `oracle_language`：只做语言 GT tracking 注入的 text-only Oracle rerun
+- `oracle_visual`：只做视觉 GT tracking 注入的 text-only Oracle rerun
+- `oracle_language_visual`：同时做语言和视觉注入的 text-only Oracle rerun
 
-如果提供了 OracleTrack rerun，还会额外计算：
+每个 Oracle 分组都会输出：
 
-- `understanding_acc_oracle`
-- `reasoning_acc_oracle`
-- `chain_success_wo_track_oracle`
-
-这里不会再出现 `chain_success_oracle`。因为 OracleTrack 下 tracking 已经被 GT 替换，Oracle rerun 唯一保留的链路级指标是纯文本链路的 `chain_success_wo_track_oracle`。
+- `num_chain_samples`
+- `num_scored_chain_samples`
+- `num_pending_chain_samples`
+- `understanding_acc`
+- `reasoning_acc`
+- `chain_success_wo_track`
 
 ## OracleTrack
 
@@ -949,8 +969,11 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 此时框架会：
 
 - 对 chain pair 做 rerun
-- 使用 `[run_eval].oracle_prompt_root` 和 `[structurer].oracle_prompt_root` 这两套专门的 OracleTrack prompt
-- 在 upstream Oracle prompt 正文中直接注入 GT tracking，但整体 prompt 仍尽量保持和普通模板一致
+- 使用 `[run_eval].oracle_prompt_root` 作为三套 Oracle prompt 基目录，`[structurer].oracle_prompt_root` 作为 Oracle 上游 structurer prompt
+- 依次运行 `language`、`visual`、`language_visual` 三组 Oracle 变体
+- `language` 变体会在 upstream Oracle prompt 正文中直接注入 GT tracking
+- `visual` 变体会把 upstream 输入媒体切换成已经画好 GT tracking 框的图片/视频
+- `language_visual` 变体会同时使用两种注入方式
 - 明确告诉模型主体已经由 GT tracking 指定，因此 Oracle upstream 输出不需要再生成 tracking
 - 下游输入会重新基于“上游完整渲染 prompt + 上游原始回答”构建链式历史
 - Oracle upstream 评分只看非 tracking 分量，Experiment B 中额外汇总 Oracle 的 text-only chain 指标
@@ -1008,19 +1031,6 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examples/run_eval_adapter.toml
 ```
 
-### 预构建全部 Experiment D 固定预算缓存
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
-```
-
-### 同时构建 main 与 Experiment D 缓存
-
-```bash
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_main.toml
-UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/examples/prepare_experiment_d.toml
-```
-
 ## 当前限制
 
 - 还没有内置 10 个 baseline 的具体 adapter
@@ -1040,7 +1050,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 7. 先跑 `run-eval --config your_model.toml` 对 `main` 协议评测
 8. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
 9. 如需 OracleTrack，在 TOML 中设置 `[run_eval].enable_oracle_track = true`
-10. 最后为 Experiment D 协议分别写 TOML，并复用相同的 prepared cache
+10. 当后续真正接入 Experiment C 的 `model-native` 协议时，再单独增加对应 TOML，不要复用 `main` 的语义
 
 如果按这个方式做，模型接入层会很薄：
 
@@ -1053,5 +1063,5 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval prepare-data --config configs/e
 
 你只需要负责：
 
-- 如何把 `model_input.sample.frame_files` 和 `model_input.messages` 送进真实模型
+- 如何把 `model_input.sample.frame_files` 或 `model_input.sample.sampled_video_file` 和 `model_input.messages` 送进真实模型
 - 如何把模型原始回答字符串返回给框架
