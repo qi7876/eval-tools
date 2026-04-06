@@ -28,7 +28,6 @@ _ALLOWED_JUDGE_VARIABLES = {
     "question_text",
     "reference_payload_json",
     "prediction_payload_json",
-    "required_json_schema_json",
 }
 
 JudgePromptTemplateError = TemplatePackError
@@ -122,18 +121,6 @@ def _judge_variables(
         "question_text": question_text,
         "reference_payload_json": json.dumps(reference_payload, ensure_ascii=False, indent=2),
         "prediction_payload_json": json.dumps(prediction_payload, ensure_ascii=False, indent=2),
-        "required_json_schema_json": json.dumps(
-            {
-            "correctness": 1,
-            "completeness": 1,
-            "faithfulness": 1,
-            "final_pass": 1,
-            "confidence": "high",
-            "brief_reason": "Prediction matches the reference answer with acceptable paraphrasing.",
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
     }
     return payload
 

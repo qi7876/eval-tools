@@ -9,7 +9,7 @@ Question:
 Output requirements:
 - Return exactly one JSON object and nothing else.
 - Use this format exactly:
-  {{output_contract}}
+  {"text": "...", "bbox": [x1, y1, x2, y2]}
 - `text` should answer the question using the scoreboard content.
 - `bbox` must cover the whole scoreboard.
 - `bbox` must use normalized_1000 corner coordinates `[x1, y1, x2, y2]`.

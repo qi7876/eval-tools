@@ -17,4 +17,7 @@ Raw model output:
 {{raw_output}}
 
 Return JSON only. Use this schema exactly:
-{{output_schema}}
+{
+  "time_window_sampled": [],
+  "tracking": []
+}

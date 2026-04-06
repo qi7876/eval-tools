@@ -133,6 +133,8 @@ def test_render_prompt_omits_metadata_and_nonessential_indexing(monkeypatch, tmp
     assert "These sampled inputs correspond to approximately" in actions_prompt
     assert "Valid sampled frame indices are" in actions_prompt
     assert "There are " in actions_prompt
+    assert "question-relevant interval in sampled-frame indices is [20, 30]" in actions_prompt
+    assert "Frames outside it are background/history context only." in actions_prompt
 
 
 def test_render_prompt_for_objects_spatial_uses_required_labels():
@@ -212,6 +214,7 @@ def test_render_prompt_for_ai_coach_focuses_on_player_mistakes():
         source_annotation_path="anno.json",
         reference_payload={"text": "The player exposed the ball and lost balance."},
         sampled_video_fps=10.0,
+        q_window_sampled=(0, 2),
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
@@ -220,6 +223,7 @@ def test_render_prompt_for_ai_coach_focuses_on_player_mistakes():
     assert "approximately 10 fps" in prompt
     assert "actual mistakes" in prompt
     assert "improvement suggestions" in prompt
+    assert "question-relevant interval in sampled-frame indices is [0, 2]" in prompt
     assert "reference answer" not in prompt
     assert "coaching advice" not in prompt
 
@@ -240,12 +244,14 @@ def test_render_prompt_for_score_prediction_uses_general_game_state_wording():
         source_annotation_path="anno.json",
         reference_payload={"text": "Team A is more likely to finish ahead."},
         sampled_video_fps=10.0,
+        q_window_sampled=(0, 2),
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
 
     assert "ranking, score, and other visible game-state information" in prompt
     assert "approximately 10 fps" in prompt
+    assert "question-relevant interval in sampled-frame indices is [0, 2]" in prompt
     assert "future result" not in prompt
     assert "predicted future result" not in prompt
 
@@ -266,6 +272,7 @@ def test_render_prompt_for_temporal_causal_uses_result_reasoning_wording():
         source_annotation_path="anno.json",
         reference_payload={"text": "Team A conceded twice late in the game."},
         sampled_video_fps=10.0,
+        q_window_sampled=(0, 2),
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
@@ -275,6 +282,7 @@ def test_render_prompt_for_temporal_causal_uses_result_reasoning_wording():
     assert "win, loss, ranking, lead change, failure, or another competition outcome" in prompt
     assert "not merely restate the result" in prompt
     assert "main cause of the asked result" in prompt
+    assert "question-relevant interval in sampled-frame indices is [0, 2]" in prompt
 
 
 def test_render_prompt_for_spatial_imagination_describes_viewpoint_based_spatial_reasoning():
@@ -293,6 +301,7 @@ def test_render_prompt_for_spatial_imagination_describes_viewpoint_based_spatial
         source_annotation_path="anno.json",
         reference_payload={"text": "The attacker will cut toward the basket."},
         sampled_video_fps=10.0,
+        q_window_sampled=(0, 2),
     )
 
     prompt = render_prompt(load_prompt_pack(PROMPT_ROOT), sample).prompt_text
@@ -303,6 +312,7 @@ def test_render_prompt_for_spatial_imagination_describes_viewpoint_based_spatial
     assert "specified viewpoint, observer position, or imagined camera angle" in prompt
     assert "position, movement trajectory, spatial relation, formation" in prompt
     assert "from the viewpoint requested in the question" in prompt
+    assert "question-relevant interval in sampled-frame indices is [0, 2]" in prompt
 
 
 def test_render_prompt_for_stg_uses_target_description_wording():
@@ -335,6 +345,7 @@ def test_render_prompt_for_stg_uses_target_description_wording():
     assert "action or event involving a particular subject" in prompt
     assert "find when the described action or event happens" in prompt
     assert "track the subject referred to by that target description" in prompt
+    assert "question-relevant interval" not in prompt
     assert "Question:" not in prompt
 
 
@@ -372,6 +383,7 @@ def test_render_oracle_prompt_uses_known_positions_wording(monkeypatch, tmp_path
     assert "normalized_1000 coordinate system" in prompt
     assert "The task is still to describe that target athlete's actions over time" in prompt
     assert "You do not need to output tracking boxes." in prompt
+    assert "question-relevant interval in sampled-frame indices is [20, 30]" in prompt
 
 
 def test_render_oracle_prompt_for_stg_uses_target_description_wording():
@@ -416,6 +428,7 @@ def test_render_oracle_prompt_for_stg_uses_target_description_wording():
     assert "normalized_1000 coordinate system" in prompt
     assert "You do not need to output tracking boxes." in prompt
     assert "OracleTrack" not in prompt
+    assert "question-relevant interval" not in prompt
     assert "Question:" not in prompt
 
 
@@ -439,6 +452,7 @@ def test_render_oracle_visual_prompt_uses_highlight_wording_without_tracking_jso
             ]
         },
         sampled_video_fps=10.0,
+        q_window_sampled=(0, 2),
     )
 
     prompt = render_oracle_upstream_prompt(
@@ -448,6 +462,7 @@ def test_render_oracle_visual_prompt_uses_highlight_wording_without_tracking_jso
     ).prompt_text
 
     assert "highlighted with GT tracking boxes directly on the sampled inputs" in prompt
+    assert "question-relevant interval in sampled-frame indices is [0, 2]" in prompt
     assert '"bbox_mot"' not in prompt
     assert "```json" not in prompt
     assert "You do not need to output tracking boxes." in prompt
@@ -483,4 +498,5 @@ def test_render_oracle_language_visual_prompt_combines_both_injections():
 
     assert "The target subject's position is already known in some sampled frames." in prompt
     assert "highlighted with GT tracking boxes directly on the sampled inputs" in prompt
+    assert "question-relevant interval" not in prompt
     assert '"bbox_mot"' in prompt

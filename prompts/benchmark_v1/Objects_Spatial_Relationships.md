@@ -8,7 +8,7 @@ Question:
 Output requirements:
 - Return exactly one JSON object and nothing else.
 - Use this format exactly:
-  {{output_contract}}
+  {"text": "...", "objects": [{"label": "...", "bbox": [x1, y1, x2, y2]}, {"label": "...", "bbox": [x1, y1, x2, y2]}]}
 - In `text`, describe the spatial relationship from the camera viewpoint and prefer these terms:
   - `left` / `right`: left or right in the image plane
   - `above` / `below`: clearly higher or lower in the 2D image plane

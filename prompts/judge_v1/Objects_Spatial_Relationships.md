@@ -30,4 +30,11 @@ Output requirements:
 - `confidence` must be one of `"low"`, `"medium"`, `"high"`.
 - `brief_reason` must be a short single-sentence explanation.
 - Use exactly this JSON schema:
-{{required_json_schema_json}}
+{
+  "correctness": 1,
+  "completeness": 1,
+  "faithfulness": 1,
+  "final_pass": 1,
+  "confidence": "high",
+  "brief_reason": "Prediction matches the reference answer with acceptable paraphrasing."
+}

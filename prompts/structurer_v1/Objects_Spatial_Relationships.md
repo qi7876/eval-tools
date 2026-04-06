@@ -19,4 +19,12 @@ Raw model output:
 {{raw_output}}
 
 Return JSON only. Use this schema exactly:
-{{output_schema}}
+{
+  "text": "",
+  "objects": [
+    {
+      "label": "",
+      "bbox": []
+    }
+  ]
+}

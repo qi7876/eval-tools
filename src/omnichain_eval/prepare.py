@@ -381,6 +381,17 @@ def build_prepared_sample(
                 "`frames` in [prepare_data].media_formats"
             )
         raise ValueError(f"{sample.sample_id}: no prepared media produced")
+    q_window_sampled = (
+        tuple(
+            original_interval_to_sampled_interval(
+                sample.q_window[0],
+                sample.q_window[1],
+                sampled_frames_original,
+            )
+        )
+        if sample.q_window is not None
+        else None
+    )
     prepared = PreparedSample(
         sample_id=sample.sample_id,
         annotation_id=sample.annotation_id,
@@ -397,6 +408,7 @@ def build_prepared_sample(
         reference_payload=reference_payload,
         timestamp_frame=sample.timestamp_frame,
         q_window=sample.q_window,
+        q_window_sampled=q_window_sampled,
         a_window=sample.a_window,
         source_tracking_path=(
             str(sample.source_tracking_path) if sample.source_tracking_path is not None else None

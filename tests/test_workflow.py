@@ -231,6 +231,24 @@ def test_prepare_data_writes_normalized_coordinate_metadata(monkeypatch, tmp_pat
     assert prepared_sample.metadata["frame_height"] > 0
 
 
+def test_prepare_data_writes_sampled_query_interval(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    build_prepared_data(FIXTURE_ROOT, prepared_root, ["main"])
+
+    prepared_samples = load_prepared_samples(prepared_root, "main")
+    actions_sample = next(sample for sample in prepared_samples if sample.annotation_id == "2")
+    downstream_sample = next(sample for sample in prepared_samples if sample.annotation_id == "4")
+
+    assert actions_sample.q_window == (100, 150)
+    assert actions_sample.q_window_sampled == (20, 30)
+    assert downstream_sample.q_window == (100, 150)
+    assert downstream_sample.q_window_sampled == (20, 30)
+
+
 def test_prepare_data_writes_sampled_video_when_requested(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "omnichain_eval.prepare.decode_selected_frames",

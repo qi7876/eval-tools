@@ -10,17 +10,10 @@ from typing import Any
 from openai import OpenAI
 
 from .constants import (
-    STRUCTURER_MODEL_DEFAULT,
-    TASK_AI_COACH,
     TASK_CONTINUOUS_ACTIONS,
-    TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
-    TASK_SCOREBOARD_MULTIPLE,
-    TASK_SCOREBOARD_SINGLE,
-    TASK_SCORE_PREDICTION,
-    TASK_SPATIAL_IMAGINATION,
     TASK_STG,
-    TASK_TEMPORAL_CAUSAL,
+    STRUCTURER_MODEL_DEFAULT,
 )
 from .normalize import validate_structured_prediction
 from .schema import PreparedSample, StructuredPredictionResult
@@ -29,7 +22,6 @@ from .utils import extract_json_object
 
 _ALLOWED_STRUCTURER_VARIABLES = {
     "raw_output",
-    "output_schema",
     "required_object_labels_json",
 }
 
@@ -172,42 +164,6 @@ def _required_object_labels_json(sample: PreparedSample) -> str:
     if any(not label for label in labels):
         raise StructurerPromptTemplateError(f"{sample.sample_id}: object labels must be non-empty")
     return json.dumps(labels, ensure_ascii=False)
-
-
-def _output_schema(task_name: str, *, oracle_upstream: bool = False) -> str:
-    if oracle_upstream:
-        if task_name == TASK_CONTINUOUS_ACTIONS:
-            return json.dumps({"segments": []}, ensure_ascii=False, indent=2)
-        if task_name == TASK_STG:
-            return json.dumps({"time_window_sampled": []}, ensure_ascii=False, indent=2)
-        raise StructurerPromptTemplateError(
-            f"oracle upstream structurer schema is unsupported for {task_name}"
-        )
-    if task_name in {
-        TASK_SCOREBOARD_MULTIPLE,
-        TASK_SPATIAL_IMAGINATION,
-        TASK_TEMPORAL_CAUSAL,
-        TASK_SCORE_PREDICTION,
-        TASK_AI_COACH,
-    }:
-        return json.dumps({"text": ""}, ensure_ascii=False, indent=2)
-    if task_name == TASK_SCOREBOARD_SINGLE:
-        return json.dumps({"text": "", "bbox": []}, ensure_ascii=False, indent=2)
-    if task_name == TASK_OBJECTS_SPATIAL:
-        return json.dumps(
-            {"text": "", "objects": [{"label": "", "bbox": []}]},
-            ensure_ascii=False,
-            indent=2,
-        )
-    if task_name == TASK_CONTINUOUS_EVENTS:
-        return json.dumps({"segments": []}, ensure_ascii=False, indent=2)
-    if task_name == TASK_CONTINUOUS_ACTIONS:
-        return json.dumps({"segments": [], "tracking": []}, ensure_ascii=False, indent=2)
-    if task_name == TASK_STG:
-        return json.dumps({"time_window_sampled": [], "tracking": []}, ensure_ascii=False, indent=2)
-    raise StructurerPromptTemplateError(f"unsupported task_name for structurer schema: {task_name}")
-
-
 def render_structurer_prompt(
     prompt_pack: dict[str, StructurerPromptTemplate],
     sample: PreparedSample,
@@ -223,7 +179,6 @@ def render_structurer_prompt(
         ) from exc
     variables: dict[str, Any] = {
         "raw_output": raw_output,
-        "output_schema": _output_schema(sample.task_name, oracle_upstream=oracle_upstream),
         "required_object_labels_json": _required_object_labels_json(sample),
     }
     prompt_text = render_template_text(template.prompt_template, variables, template.path)

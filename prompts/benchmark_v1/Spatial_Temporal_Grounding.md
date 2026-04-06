@@ -10,7 +10,7 @@ Target Description:
 Output requirements:
 - Return exactly one JSON object and nothing else.
 - Use this format exactly:
-  {{output_contract}}
+  {"time_window_sampled": [0, 4], "tracking": [{"frame_sampled": 0, "bbox_mot": [left, top, width, height]}]}
 - `time_window_sampled` should cover when the described action or event happens.
 - `time_window_sampled` must use sampled-frame indices.
 - Each tracking row should localize the subject referred to by the target description.

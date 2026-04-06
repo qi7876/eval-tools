@@ -70,6 +70,7 @@ class PreparedSample:
     reference_payload: dict[str, Any]
     timestamp_frame: int | None = None
     q_window: tuple[int, int] | None = None
+    q_window_sampled: tuple[int, int] | None = None
     a_window: tuple[int, int] | None = None
     source_tracking_path: str | None = None
     upstream_annotation_id: str | None = None
@@ -103,6 +104,9 @@ class PreparedSample:
             reference_payload=payload["reference_payload"],
             timestamp_frame=payload.get("timestamp_frame"),
             q_window=tuple(payload["q_window"]) if payload.get("q_window") else None,
+            q_window_sampled=(
+                tuple(payload["q_window_sampled"]) if payload.get("q_window_sampled") else None
+            ),
             a_window=tuple(payload["a_window"]) if payload.get("a_window") else None,
             source_tracking_path=payload.get("source_tracking_path"),
             upstream_annotation_id=payload.get("upstream_annotation_id"),

@@ -7,16 +7,10 @@ from typing import Any
 
 from .constants import (
     ORACLE_EXPERIMENT_B_VARIANTS,
-    TASK_AI_COACH,
     TASK_CONTINUOUS_ACTIONS,
-    TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
-    TASK_SCOREBOARD_MULTIPLE,
-    TASK_SCOREBOARD_SINGLE,
-    TASK_SCORE_PREDICTION,
-    TASK_SPATIAL_IMAGINATION,
     TASK_STG,
-    TASK_TEMPORAL_CAUSAL,
+    WINDOW_TASKS,
 )
 from .schema import ModelInput, PreparedSample, PromptMessage, RenderedPrompt
 from .template_pack import TaskTemplate, TemplatePackError, load_task_template_pack, render_template_text
@@ -26,14 +20,12 @@ _ALLOWED_INFERENCE_VARIABLES = {
     "num_sampled_frames",
     "sampled_index_range",
     "sampled_video_fps",
-    "output_contract",
+    "question_relevant_sampled_interval",
     "required_object_labels_json",
 }
 
 _ALLOWED_ORACLE_INFERENCE_VARIABLES = _ALLOWED_INFERENCE_VARIABLES | {
-    "oracle_tracking_explanation",
     "oracle_tracking_json",
-    "oracle_visual_explanation",
 }
 
 _ORACLE_UPSTREAM_TASKS = [TASK_CONTINUOUS_ACTIONS, TASK_STG]
@@ -60,53 +52,16 @@ def load_oracle_prompt_pack(prompt_root):
     }
 
 
-def _output_contract(task_name: str) -> str:
-    if task_name in {
-        TASK_SCOREBOARD_MULTIPLE,
-        TASK_SPATIAL_IMAGINATION,
-        TASK_TEMPORAL_CAUSAL,
-        TASK_SCORE_PREDICTION,
-        TASK_AI_COACH,
-    }:
-        return 'Return JSON only: {"text": "..."}'
-    if task_name == TASK_SCOREBOARD_SINGLE:
-        return 'Return JSON only: {"text": "...", "bbox": [x1, y1, x2, y2]}'
-    if task_name == TASK_OBJECTS_SPATIAL:
-        return (
-            'Return JSON only: {"text": "...", "objects": [{"label": "...", "bbox": '
-            '[x1, y1, x2, y2]}, {"label": "...", "bbox": [x1, y1, x2, y2]}]}'
-        )
-    if task_name == TASK_CONTINUOUS_EVENTS:
-        return (
-            'Return JSON only: {"segments": [{"start_sampled": 0, "end_sampled": 3, '
-            '"text": "..."}]}'
-        )
-    if task_name == TASK_CONTINUOUS_ACTIONS:
-        return (
-            'Return JSON only: {"segments": [{"start_sampled": 0, "end_sampled": 3, '
-            '"text": "..."}], "tracking": [{"frame_sampled": 0, "bbox_mot": [left, top, '
-            'width, height]}]}'
-        )
-    if task_name == TASK_STG:
-        return (
-            'Return JSON only: {"time_window_sampled": [0, 4], "tracking": '
-            '[{"frame_sampled": 0, "bbox_mot": [left, top, width, height]}]}'
-        )
-    raise PromptTemplateError(f"unsupported task_name for output contract: {task_name}")
-
-
-def _oracle_output_contract(task_name: str) -> str:
-    if task_name == TASK_CONTINUOUS_ACTIONS:
-        return 'Return JSON only: {"segments": [{"start_sampled": 0, "end_sampled": 3, "text": "..."}]}'
-    if task_name == TASK_STG:
-        return 'Return JSON only: {"time_window_sampled": [0, 4]}'
-    raise PromptTemplateError(f"unsupported task_name for OracleTrack output contract: {task_name}")
-
-
 def _sampled_index_range(sample: PreparedSample) -> str:
     if not sample.sampled_frames_original:
         raise PromptTemplateError(f"{sample.sample_id}: no sampled frames available")
     return f"0..{len(sample.sampled_frames_original) - 1}"
+
+
+def _question_relevant_sampled_interval(sample: PreparedSample) -> str:
+    if sample.q_window_sampled is None:
+        raise PromptTemplateError(f"{sample.sample_id}: missing q_window_sampled")
+    return f"[{sample.q_window_sampled[0]}, {sample.q_window_sampled[1]}]"
 
 
 def _required_object_labels_json(sample: PreparedSample) -> str:
@@ -143,9 +98,12 @@ def render_prompt(
         "num_sampled_frames": len(sample.sampled_frames_original),
         "sampled_index_range": _sampled_index_range(sample),
         "sampled_video_fps": _sampled_video_fps(sample),
-        "output_contract": _output_contract(sample.task_name),
         "required_object_labels_json": _required_object_labels_json(sample),
     }
+    if sample.task_name in WINDOW_TASKS:
+        variables["question_relevant_sampled_interval"] = _question_relevant_sampled_interval(
+            sample
+        )
     prompt_text = render_template_text(template.prompt_template, variables, template.path)
     return RenderedPrompt(
         task_name=sample.task_name,
@@ -153,46 +111,6 @@ def render_prompt(
         prompt_text=prompt_text,
         variables=variables,
     )
-
-
-def _oracle_tracking_explanation(sample: PreparedSample) -> str:
-    if sample.task_name == TASK_STG:
-        return (
-            "Each row already gives the target subject's known location in the "
-            "normalized_1000 coordinate system, where `(0, 0)` is the top-left corner "
-            "of the frame and `(1000, 1000)` is the bottom-right corner. Each row uses "
-            "`frame_sampled` as a sampled-frame index and `bbox_mot` as "
-            "`[left, top, width, height]`. Use these known boxes only to identify the "
-            "target subject. You only need to predict `time_window_sampled`."
-        )
-    if sample.task_name == TASK_CONTINUOUS_ACTIONS:
-        return (
-            "Each row already gives the target athlete's known location in the "
-            "normalized_1000 coordinate system, where `(0, 0)` is the top-left corner "
-            "of the frame and `(1000, 1000)` is the bottom-right corner. Each row uses "
-            "`frame_sampled` as a sampled-frame index and `bbox_mot` as "
-            "`[left, top, width, height]`. Use these known boxes only to identify the "
-            "target athlete. You only need to describe action segments."
-        )
-    raise PromptTemplateError(f"unsupported oracle upstream task: {sample.task_name}")
-
-
-def _oracle_visual_explanation(sample: PreparedSample) -> str:
-    if sample.task_name == TASK_STG:
-        return (
-            "The target subject has already been highlighted with GT tracking boxes directly "
-            "on the sampled inputs. Use the highlighted boxes only to identify the target "
-            "subject. You only need to predict `time_window_sampled`."
-        )
-    if sample.task_name == TASK_CONTINUOUS_ACTIONS:
-        return (
-            "The target athlete has already been highlighted with GT tracking boxes directly "
-            "on the sampled inputs. Use the highlighted boxes only to identify the target "
-            "athlete. You only need to describe action segments."
-        )
-    raise PromptTemplateError(f"unsupported oracle upstream task: {sample.task_name}")
-
-
 def render_oracle_upstream_prompt(
     prompt_pack: dict[str, dict[str, PromptTemplate]],
     sample: PreparedSample,
@@ -220,11 +138,12 @@ def render_oracle_upstream_prompt(
         "num_sampled_frames": len(sample.sampled_frames_original),
         "sampled_index_range": _sampled_index_range(sample),
         "sampled_video_fps": _sampled_video_fps(sample),
-        "output_contract": _oracle_output_contract(sample.task_name),
-        "oracle_tracking_explanation": _oracle_tracking_explanation(sample),
         "oracle_tracking_json": json.dumps(tracking_gt, ensure_ascii=False, indent=2),
-        "oracle_visual_explanation": _oracle_visual_explanation(sample),
     }
+    if sample.task_name == TASK_CONTINUOUS_ACTIONS:
+        variables["question_relevant_sampled_interval"] = _question_relevant_sampled_interval(
+            sample
+        )
     prompt_text = render_template_text(template.prompt_template, variables, template.path)
     return RenderedPrompt(
         task_name=sample.task_name,

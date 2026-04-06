@@ -47,7 +47,7 @@ def _prompt_pack() -> dict[str, TaskTemplate]:
         "Scoreboard_Multiple": TaskTemplate(
             task_name="Scoreboard_Multiple",
             path=Path("Scoreboard_Multiple.md"),
-            prompt_template="{{raw_output}}\n{{output_schema}}",
+            prompt_template='{{raw_output}}\n{"text": ""}',
         )
     }
 
