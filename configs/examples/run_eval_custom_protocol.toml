@@ -1,16 +1,14 @@
 [run_eval]
 prepared_root = "/data/public_data/mllmbenchmark_prepared"
-protocol = "main"
+protocol = "omnichain_eval.example_protocols:ExampleEightFrameUniformProtocol"
 artifacts_root = "../../artifacts/runs"
 prompt_root = "../../prompts/benchmark_v1"
-run_name = "baseline-main"
+run_name = "baseline-custom-protocol"
 model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 chain_manifest = "../../artifacts/chain_pairs.jsonl"
 enable_oracle_track = false
 # oracle_prompt_root = "../../prompts/benchmark_oracle_v1"
-# For model-native sampling, copy this file and replace `main` with the same
-# protocol spec used during prepare-data, e.g. `your_package.protocols:YourNativeSamplingProtocol`.
 
 [judge]
 backend = "openai"

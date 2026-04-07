@@ -33,9 +33,10 @@ The adapter must be minimal. The framework already owns prompt construction, cha
 - [src/omnichain_eval/experiments.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/experiments.py)
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)
 - [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml)
+- [configs/examples/run_eval_custom_protocol.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_custom_protocol.toml)
 - [README.md](/home/qi7876/dev/eval-tools/README.md)
 
-For live evaluation examples, the repository now ships one `run_eval_<protocol>.toml` file per supported protocol under `configs/examples/`.
+For live evaluation examples, the repository ships configs for both the built-in `main` protocol and a placeholder custom-protocol workflow under `configs/examples/`.
 
 ## Current Framework Contract
 
@@ -72,6 +73,8 @@ Important detail:
 - `load_prepared_samples()` rewrites `sample.frame_files` to absolute paths at runtime in [src/omnichain_eval/prepare.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/prepare.py#L329).
 - `load_prepared_samples()` also rewrites `sample.sampled_video_file` to an absolute path when it exists.
 - The adapter can open frame files or the sampled video directly from those absolute paths.
+- The current protocol has already decided which sampled frames or sampled video the model should see.
+- If a model needs a different native sampling rule, implement a `BaseProtocol` class and rebuild prepared data for that protocol instead of re-sampling inside the adapter.
 
 ### What the framework already does
 
@@ -140,6 +143,7 @@ Do not drop or rewrite this history. If the model API accepts chat messages, pas
 - prompt-template selection
 - chain-history assembly
 - dataset scanning
+- sampling-policy definition
 - any report/summary logic
 
 ## Recommended Implementation Shape
@@ -363,6 +367,8 @@ invalid_json_retries = 2
 [judge.extra_body]
 enable_thinking = false
 ```
+
+If the model needs native sampling different from `main`, replace `protocol = "main"` with the same custom protocol spec you used during `prepare-data`, for example `your_package.protocols:YourNativeSamplingProtocol`.
 
 The framework owns structurer and judge configuration. Do not try to push model runtime knobs into this TOML unless the repository explicitly decides to support that later.
 

@@ -18,7 +18,7 @@ The current implementation includes:
 
 - Raw dataset validation
 - Chain manifest generation for Experiment B
-- Prepared-data generation for the main fixed-budget protocol
+- Prepared-data generation for the built-in `main` protocol and importable custom protocols
 - Live adapter-based evaluation
 - Framework-owned prompt building, chain-history injection, structured extraction, and scoring
 - LLM-as-a-judge integration through an OpenAI-compatible API
@@ -138,7 +138,7 @@ That means:
 
 - raw data paths live in TOML
 - prepared-data paths live in TOML
-- protocol ids live in TOML
+- protocol specs live in TOML
 - model adapter paths live in TOML
 - inference prompt roots live in TOML
 - prepare-data worker count lives in TOML
@@ -151,8 +151,10 @@ Example config files shipped with the repository:
 
 - [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml): validate-data and build-chain-manifest
 - [configs/examples/prepare_main.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_main.toml): prepare-data for `main`
+- [configs/examples/prepare_custom_protocol.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_custom_protocol.toml): prepare-data for an importable custom protocol
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml): mock smoke-test evaluation
 - [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml): live `run-eval` example for `main`
+- [configs/examples/run_eval_custom_protocol.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_custom_protocol.toml): live `run-eval` example for an importable custom protocol
 
 Supported top-level sections:
 
@@ -203,6 +205,7 @@ Path rules:
 
 - relative paths are resolved relative to the TOML file location
 - absolute paths are supported directly
+- `protocol` / `protocols` entries accept either a built-in id such as `main` or an importable Python spec such as `your_package.protocols:EightFrameUniformProtocol`
 - different experiments should use different TOML files
 - keep `[run_eval]`, `[structurer]`, and `[judge]` together in the same run-eval TOML
 - secrets can stay out of TOML by setting `api_key_env`
@@ -269,7 +272,7 @@ Output schema:
 
 ### 3. Prepare reusable test data
 
-Build the main protocol cache:
+Build the built-in `main` protocol cache:
 
 ```bash
 UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
@@ -278,11 +281,12 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 ```
 
 The shipped example config builds the reusable `main` cache under one prepared-data tree.
+If a model needs its own native sampling rule, point `[prepare_data].protocols` at an importable protocol class instead.
 
 What it does:
 
 - loads raw samples
-- applies the `main` protocol sampling rule
+- applies the configured protocol sampling rule
 - decodes the required frames
 - writes each sample as a prepared bundle
 - can additionally encode a sampled MP4 from the sampled frames when `[prepare_data].media_formats` includes `sampled_video`
@@ -297,6 +301,7 @@ Important:
 - `workers` controls video-level thread concurrency inside one protocol; protocols are still built sequentially
 - the shipped example prepare configs use `media_formats = ["frames", "sampled_video"]`
 - `configs/examples/prepare_main.toml` also enables `generate_oracle_visual_media = true` for Experiment B Oracle visual variants
+- `configs/examples/prepare_custom_protocol.toml` shows how to reference an importable native-sampling protocol
 - sampled videos are rebuilt from the sampled frames only, use H.264 (`libx264`), contain no audio stream, and are generated only for multi-frame samples
 
 The cache is sample-centric. The runtime evaluation path reads from the configured `prepared_root` instead of decoding raw videos again.
@@ -316,25 +321,66 @@ The runtime writes and resumes from six artifact files inside each run directory
 
 After each run, the framework recomputes the latest aggregate metrics and rewrites `summary.json`.
 
-## Prepared-Data Protocol IDs
+## Prepared-Data Protocols
 
-Currently supported:
+The framework now supports two kinds of protocol specs:
 
-- `main`
+- built-in ids such as `main`
+- importable Python classes such as `your_package.protocols:EightFrameUniformProtocol`
 
 Notes:
 
-- `main` supports all benchmark tasks, including STG
-- Experiment C `model-native` is not prebuilt in this version
-- The protocol shell is still kept in the framework, but current prepared-data support is `main` only
+- `main` remains the built-in benchmark protocol and supports all benchmark tasks, including STG
+- custom protocols are how you express model-native sampling rules such as fixed 8-frame uniform sampling or 1 fps sampling
+- a protocol owns sampling only; prompts, structuring, judging, metrics, chain logic, and OracleTrack remain framework-owned
+- `prepare-data` and `run-eval` must use the same protocol spec; mismatches fail loudly and require rebuilding prepared data
+
+### Custom Protocol Interface
+
+Custom protocols must inherit from `BaseProtocol` in [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py).
+The repository also ships [src/omnichain_eval/example_protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/example_protocols.py) as an importable example module for the example TOMLs.
+
+Minimum shape:
+
+```python
+from omnichain_eval.protocols import BaseProtocol, uniform_sample_closed_interval
+
+
+class EightFrameUniformProtocol(BaseProtocol):
+    @property
+    def protocol_id(self) -> str:
+        return "native_uniform_8"
+
+    @property
+    def description(self) -> str:
+        return "Eight-frame uniform sampling over the question window."
+
+    def sample_frames(self, sample):
+        if sample.timestamp_frame is not None and sample.task_name in {"Scoreboard_Single", "Objects_Spatial_Relationships"}:
+            return [sample.timestamp_frame]
+        if sample.q_window is None:
+            raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
+        start, end = sample.q_window
+        return uniform_sample_closed_interval(start, end, 8)
+```
+
+Then reference it from TOML:
+
+```toml
+[prepare_data]
+protocols = ["omnichain_eval.example_protocols:ExampleEightFrameUniformProtocol"]
+
+[run_eval]
+protocol = "omnichain_eval.example_protocols:ExampleEightFrameUniformProtocol"
+```
 
 ## Prepared Data Directory Layout
 
-After running `prepare-data` with a config whose `[prepare_data].protocols` includes `main`, the layout looks like:
+After running `prepare-data`, each resolved protocol gets its own directory under `prepared_root`:
 
 ```text
 <prepared_root>/
-  main/
+  <protocol_id>/
     build_manifest.json
     index.jsonl
     stats.json
@@ -395,6 +441,7 @@ At runtime, `load_prepared_samples()` rewrites them to absolute paths.
 `sampled_video_file` is present only for multi-frame samples when sampled-video generation was enabled.
 `sampled_video_fps` records the effective playback rate implied by the sampled frame spacing and is used both by adapters and by benchmark prompt rendering.
 When Oracle visual media generation is enabled, Oracle upstream samples also include `oracle_visual_frame_files` and `oracle_visual_sampled_video_file`.
+`metadata` also includes the resolved `protocol_spec` and `protocol_manifest` at runtime.
 
 For segment tasks, `reference_payload` contains both original-frame and sampled-frame segments.
 
@@ -407,7 +454,9 @@ For tracking tasks:
 
 Protocol-level metadata:
 
-- protocol spec
+- `protocol_id`
+- `protocol_spec`
+- `protocol_manifest`
 - `data_status` with raw-dataset counts, supported-dataset counts, ignored unsupported task counts, and supported issue counts
 - `supported_dataset_fingerprint`
 - number of prepared samples
@@ -446,6 +495,7 @@ prompt_root = "prompts/structurer_v1"
 ```
 
 The adapter class must be importable in the current Python environment.
+[run_eval].protocol must use the same built-in id or Python protocol spec that was used during `prepare-data`.
 `[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 10 task Markdown templates.
 `[structurer].prompt_root` is also required and must point to the structurer prompt pack.
 If `[run_eval].enable_oracle_track = true`, then `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` are also required.
@@ -505,6 +555,12 @@ In practice, adapters read prompts from `model_input.messages` and choose media 
 - use `sampled_video_file` for video-native models when it is present
 - use `sampled_video_fps` if the model API needs explicit timing metadata
 
+Important:
+
+- the current protocol has already decided which frames or sampled video the model should see
+- adapters should not re-sample or silently replace that sampling policy
+- if a model needs a different native sampling rule, implement a new `BaseProtocol` class and rebuild prepared data for that protocol
+
 For chain-downstream `Spatial_Imagination`, the framework automatically builds the final message list as:
 
 - `user`: upstream question
@@ -549,6 +605,10 @@ Canonical expectations by task:
   ]
 }
 ```
+
+During structuring and validation, required OSR labels are still enforced by label.
+If a required label has no explicit valid bbox in the raw model output, the framework normalizes that bbox to the sentinel `[-1, -1, -1, -1]`.
+The text answer is still judged normally, while that object's IoU becomes `0`.
 
 - `Continuous_Events_Caption`:
 
@@ -718,6 +778,8 @@ Current structurer behavior:
 - it uses the task-specific schema and prompt template to determine which canonical fields the current task expects
 - it should prefer the final answer if the raw output contains reasoning plus a final answer
 - it must not invent missing boxes, intervals, tracking rows, or answer text that do not appear in the raw model output
+- for `Scoreboard_Single`, missing or invalid score-box outputs are normalized to the sentinel bbox `[-1, -1, -1, -1]`
+- for `Objects_Spatial_Relationships`, missing required labels or missing/invalid required object boxes are normalized label-wise to the sentinel bbox `[-1, -1, -1, -1]`
 
 Retry behavior:
 
@@ -956,6 +1018,7 @@ The framework follows deterministic failure rules:
 Additionally:
 
 - duplicate tracking predictions on the same sampled frame are collapsed by keeping the first one
+- `Scoreboard_Single` and `Objects_Spatial_Relationships` sentinel boxes contribute IoU `0` instead of forcing the sample to remain unstructured
 - unsupported raw tasks are ignored and recorded in `build_manifest.json` / `summary.json`
 - supported-task validation problems still stop `prepare-data`
 
@@ -990,21 +1053,21 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examp
 ## Current Limitations
 
 - The repository does not yet include concrete adapters for the 10 baseline models.
-- Experiment C model-native inputs are not standardized in this version.
+- The repository does not yet include a built-in library of baseline-specific native sampling protocol classes.
 - Prepared-data generation currently writes JPEG frame bundles per sample rather than a deduplicated shared frame store.
 
 ## Recommended Workflow For Adding A New Model
 
 1. Create a dedicated TOML file for the model and protocol you want to evaluate.
-2. Run `prepare-data` for the protocol(s) you need.
-3. Implement a `BaseModelAdapter` subclass in your own importable module.
-4. Point `[run_eval].prompt_root` to your inference prompt pack and `[structurer].prompt_root` to your structurer prompt pack.
-5. Make the adapter consume `model_input.sample`, `model_input.messages`, and the prepared media referenced by the sample.
-6. Return the raw model answer as a string.
-7. Run `run-eval --config your_model.toml` on `main`.
-8. Set `[run_eval].chain_manifest` to get Experiment B metrics.
-9. If needed, set `[run_eval].enable_oracle_track = true` and let the framework run OracleTrack reruns.
-10. When Experiment C `model-native` is implemented later, add a separate TOML for that protocol instead of overloading the `main` config.
+2. If the model needs native sampling different from `main`, implement a `BaseProtocol` subclass in your own importable module.
+3. Run `prepare-data` for the protocol(s) you need.
+4. Implement a `BaseModelAdapter` subclass in your own importable module.
+5. Point `[run_eval].prompt_root` to your inference prompt pack and `[structurer].prompt_root` to your structurer prompt pack.
+6. Make the adapter consume `model_input.sample`, `model_input.messages`, and the prepared media referenced by the sample.
+7. Return the raw model answer as a string.
+8. Run `run-eval --config your_model.toml` on the same protocol you prepared.
+9. Set `[run_eval].chain_manifest` to get Experiment B metrics.
+10. If needed, set `[run_eval].enable_oracle_track = true` and let the framework run OracleTrack reruns.
 
 If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, prompt construction, chain accounting, structured extraction, scoring, and summary generation remain inside the framework.
 

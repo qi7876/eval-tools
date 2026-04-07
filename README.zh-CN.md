@@ -15,7 +15,7 @@
 
 - 原始数据校验
 - Experiment B 所需 chain manifest 生成
-- 主协议 `main` 的 prepared-data 构建
+- 内置 `main` 协议和可导入自定义协议的 prepared-data 构建
 - 在线 adapter 模式评测
 - 框架统一负责 prompt 构造、链式历史注入、结构化抽取与评分
 - 指标计算与样本级 pass/fail 判断
@@ -144,7 +144,7 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 
 - 原始数据路径
 - prepared-data 路径
-- protocol id
+- protocol spec
 - adapter 路径
 - inference prompt 路径
 - prepare-data 的 worker 数
@@ -157,8 +157,10 @@ uv run omnichain-eval <command> --config <path/to/config.toml>
 
 - [configs/examples/workflow.toml](/home/qi7876/dev/eval-tools/configs/examples/workflow.toml)：数据校验与 chain manifest 生成
 - [configs/examples/prepare_main.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_main.toml)：只构建 `main` 协议缓存
+- [configs/examples/prepare_custom_protocol.toml](/home/qi7876/dev/eval-tools/configs/examples/prepare_custom_protocol.toml)：自定义协议的 `prepare-data` 示例
 - [configs/examples/run_eval_adapter.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_adapter.toml)：mock smoke test 评测
 - [configs/examples/run_eval_main.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_main.toml)：`main` 协议在线评测示例
+- [configs/examples/run_eval_custom_protocol.toml](/home/qi7876/dev/eval-tools/configs/examples/run_eval_custom_protocol.toml)：自定义协议的 `run-eval` 示例
 
 支持的顶层 section：
 
@@ -209,6 +211,7 @@ enable_thinking = false
 
 - 相对路径都以当前 TOML 文件所在目录为基准解析
 - 绝对路径可以直接写
+- `protocol` / `protocols` 既可以写内置 id，例如 `main`，也可以写可导入 Python 类，例如 `your_package.protocols:EightFrameUniformProtocol`
 - 不同实验建议拆成不同 TOML 文件
 - `run-eval` 相关的 `[run_eval]`、`[structurer]`、`[judge]` 建议放在同一个 TOML 中统一管理
 - 密钥更建议通过 `api_key_env` 指向环境变量
@@ -300,10 +303,11 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 ```
 
 仓库内提供的示例配置会直接构建可复用的 `main` prepared cache。
+如果某个模型需要不同于 `main` 的原生采样方式，那么应该把 `[prepare_data].protocols` 指向一个可导入的自定义协议类。
 
 这个命令会：
 
-- 按 `main` 协议对 sample 进行采样
+- 按当前配置的协议对 sample 进行采样
 - 解码相应视频帧
 - 把每个 sample 写成一个独立 bundle
 - 当 `[prepare_data].media_formats` 包含 `sampled_video` 时，再额外基于采样帧编码一个 sampled MP4
@@ -320,6 +324,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 - `workers` 控制单个 protocol 内部按视频并发的线程数；不同 protocol 之间仍然串行构建
 - 仓库自带的 prepare 示例都使用 `media_formats = ["frames", "sampled_video"]`
 - `configs/examples/prepare_main.toml` 还会开启 `generate_oracle_visual_media = true`，用于 Experiment B 的 Oracle 视觉/联合实验
+- `configs/examples/prepare_custom_protocol.toml` 展示了如何引用一个可导入的自定义协议类
 - sampled video 只会从已经采样好的帧重编码，不会直接截原视频；只给多帧 sample 生成，编码为无音频 H.264 (`libx264`)
 
 ### 为什么要先构建 prepared data
@@ -333,25 +338,66 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval \
 
 prepared-data 方案解决了这些问题。
 
-## 支持的协议 ID
+## 支持的协议形式
 
-当前可用的协议：
+当前框架支持两类 protocol spec：
 
-- `main`
+- 内置 id，例如 `main`
+- 可导入 Python 类，例如 `your_package.protocols:EightFrameUniformProtocol`
 
 说明：
 
-- `main` 支持全部任务，包括 STG
-- Experiment C 的 `model-native` 当前没有统一 prepared-data 形式
-- 框架仍保留了协议壳层，但当前 prepared-data 只支持 `main`
+- `main` 仍然是框架内置 benchmark 协议，覆盖全部任务，包括 STG
+- 自定义协议就是表达模型原生采样方式的入口，例如固定 8 帧均匀采样、按 1 fps 采样等
+- protocol 只负责采样；prompt、structurer、judge、metrics、chain 和 OracleTrack 仍然由框架统一负责
+- `prepare-data` 和 `run-eval` 必须使用同一个 protocol spec；不一致时会直接报错并要求重建 prepared data
+
+### 自定义协议接口
+
+自定义协议需要继承 [src/omnichain_eval/protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/protocols.py) 中的 `BaseProtocol`。
+仓库内也提供了一个可直接导入的示例模块 [src/omnichain_eval/example_protocols.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/example_protocols.py)，供示例 TOML 使用。
+
+最小示例：
+
+```python
+from omnichain_eval.protocols import BaseProtocol, uniform_sample_closed_interval
+
+
+class EightFrameUniformProtocol(BaseProtocol):
+    @property
+    def protocol_id(self) -> str:
+        return "native_uniform_8"
+
+    @property
+    def description(self) -> str:
+        return "Eight-frame uniform sampling over the question window."
+
+    def sample_frames(self, sample):
+        if sample.timestamp_frame is not None and sample.task_name in {"Scoreboard_Single", "Objects_Spatial_Relationships"}:
+            return [sample.timestamp_frame]
+        if sample.q_window is None:
+            raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
+        start, end = sample.q_window
+        return uniform_sample_closed_interval(start, end, 8)
+```
+
+然后在 TOML 中这样引用：
+
+```toml
+[prepare_data]
+protocols = ["omnichain_eval.example_protocols:ExampleEightFrameUniformProtocol"]
+
+[run_eval]
+protocol = "omnichain_eval.example_protocols:ExampleEightFrameUniformProtocol"
+```
 
 ## Prepared Data 的目录结构
 
-执行 `prepare-data`，并且对应配置的 `[prepare_data].protocols` 包含 `main` 后，目录类似：
+执行 `prepare-data` 后，每个解析出来的协议都会在 `prepared_root` 下拥有独立目录：
 
 ```text
 <prepared_root>/
-  main/
+  <protocol_id>/
     build_manifest.json
     index.jsonl
     stats.json
@@ -411,6 +457,7 @@ prepared-data 方案解决了这些问题。
 `sampled_video_file` 只会在多帧 sample 且 prepare 时启用了 sampled video 时出现。
 `sampled_video_fps` 表示采样后这段输入对应的大致播放帧率，adapter 和 benchmark prompt 都可以直接使用它。
 如果 prepare 时启用了 Oracle 视觉媒体生成，那么 Oracle 上游样本还会额外带上 `oracle_visual_frame_files` 和 `oracle_visual_sampled_video_file`。
+运行时，`metadata` 里还会补充 `protocol_spec` 和 `protocol_manifest`。
 
 ### `reference_payload` 的作用
 
@@ -434,7 +481,9 @@ prepared-data 方案解决了这些问题。
 
 协议级元数据，包括：
 
-- protocol 定义
+- `protocol_id`
+- `protocol_spec`
+- `protocol_manifest`
 - `data_status`，其中包含 raw dataset 计数、supported dataset 计数、ignored unsupported task 计数、supported issue 计数
 - `supported_dataset_fingerprint`
 - prepared sample 数量
@@ -553,6 +602,8 @@ adapter 现在会收到一个 `ModelInput`。常用字段包括：
 - `model_input.sample.sampled_video_file` 如果存在，也已经是绝对路径
 - 每张图已经按采样顺序排好
 - sampled 索引就是 `frame_files` 的顺序索引
+- 当前 protocol 已经决定了模型真正看到哪些帧或 sampled video；adapter 不应自行重新采样
+- 如果模型需要不同于当前 protocol 的原生采样方式，应新增 `BaseProtocol` 子类并重新生成 prepared data
 
 如果当前 sample 是链式下游 `Spatial_Imagination`，框架会自动把最终消息构造成：
 
@@ -595,6 +646,10 @@ adapter 应直接返回模型的原始回答字符串。
   ]
 }
 ```
+
+在 structurer / validation 阶段，OSR 仍然按 label 强约束。
+如果某个必需 label 在模型原始输出中没有显式有效 bbox，框架会把该对象的 bbox 规范化为 sentinel `[-1, -1, -1, -1]`。
+文本关系仍然正常进入 judge，而该对象的 IoU 会记为 `0`。
 
 #### `Continuous_Events_Caption`
 
@@ -761,6 +816,8 @@ concurrency = 1
 - 它根据当前任务的 schema 和 prompt 模板来判断应整理出哪些标准字段
 - 如果 raw output 里同时有分析过程和最终答案，structurer 应优先整理最终答案
 - structurer 不应凭空补出 raw output 里没有出现的 bbox、区间、tracking 或答案文本
+- 对 `Scoreboard_Single`，缺失或非法的计分板框会被规范化为 sentinel bbox `[-1, -1, -1, -1]`
+- 对 `Objects_Spatial_Relationships`，缺失 label、缺失 bbox、或非法 bbox 会按 label 规范化为 sentinel bbox `[-1, -1, -1, -1]`
 
 当前 retry 规则：
 
@@ -1000,6 +1057,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 此外：
 
 - 同一 sampled frame 上多个 tracking 预测会保留第一个
+- `Scoreboard_Single` 和 `Objects_Spatial_Relationships` 的 sentinel bbox 会让对应 IoU 记为 `0`，而不是把样本卡死在未结构化状态
 - 原始数据中的 unsupported task 会被忽略，并记录到 `build_manifest.json` / `summary.json`
 - 支持任务本身的数据校验错误仍然会阻断 `prepare-data`
 
@@ -1034,7 +1092,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examp
 ## 当前限制
 
 - 还没有内置 10 个 baseline 的具体 adapter
-- Experiment C 的 model-native 输入协议还没有统一
+- 还没有内置一套 baseline 专属的原生采样协议类，需要你按模型自行实现
 - prepared-data 当前按 sample 写 JPEG bundle，没有做共享帧去重存储
 
 ## 推荐接入新模型的方式
@@ -1042,15 +1100,15 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examp
 建议按以下顺序接入一个新模型：
 
 1. 先为这个模型和协议新建一个独立 TOML 文件
-2. 运行 `prepare-data`
-3. 编写一个 `BaseModelAdapter` 子类
-4. 在 TOML 里同时配置 `[run_eval].prompt_root` 和 `[structurer].prompt_root`
-5. 让 adapter 只消费 `model_input.sample`、`model_input.messages` 和 sample 对应的 prepared frame bundle
-6. 让 adapter 直接返回模型原始回答字符串
-7. 先跑 `run-eval --config your_model.toml` 对 `main` 协议评测
-8. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
-9. 如需 OracleTrack，在 TOML 中设置 `[run_eval].enable_oracle_track = true`
-10. 当后续真正接入 Experiment C 的 `model-native` 协议时，再单独增加对应 TOML，不要复用 `main` 的语义
+2. 如果模型需要不同于 `main` 的原生采样方式，先实现一个 `BaseProtocol` 子类
+3. 运行 `prepare-data`
+4. 编写一个 `BaseModelAdapter` 子类
+5. 在 TOML 里同时配置 `[run_eval].prompt_root` 和 `[structurer].prompt_root`
+6. 让 adapter 只消费 `model_input.sample`、`model_input.messages` 和 sample 对应的 prepared frame bundle
+7. 让 adapter 直接返回模型原始回答字符串
+8. 运行 `run-eval --config your_model.toml`，并确保它使用的是与你 prepare 时相同的 protocol
+9. 在 TOML 中设置 `[run_eval].chain_manifest` 查看 Experiment B
+10. 如需 OracleTrack，在 TOML 中设置 `[run_eval].enable_oracle_track = true`
 
 如果按这个方式做，模型接入层会很薄：
 

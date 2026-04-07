@@ -5,5 +5,6 @@ data_root = "/data/public_data/mllmbenchmark"
 data_root = "/data/public_data/mllmbenchmark"
 out = "../../artifacts/chain_pairs.jsonl"
 
-# Use `prepare_main.toml` for `prepare-data`.
-# The example prepare config generates sampled frames and sampled videos.
+# Use `prepare_main.toml` for the built-in `main` protocol.
+# Use `prepare_custom_protocol.toml` as a starting point for model-native sampling protocols.
+# The example prepare configs generate sampled frames and sampled videos.
