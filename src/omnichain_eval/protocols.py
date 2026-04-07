@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import importlib
+from abc import ABC, abstractmethod
 from bisect import bisect_left
-from typing import Iterable
+from typing import Any, Iterable
 
 from .constants import (
     MAIN_FRAME_BUDGET,
@@ -12,32 +14,8 @@ from .constants import (
     STG_EXPANSION_FRAMES,
     TASK_STG,
 )
-from .schema import ProtocolSpec, SampleRecord
+from .schema import SampleRecord
 from .utils import clip_index
-
-
-MAIN_PROTOCOL = ProtocolSpec(
-    protocol_id="main",
-    description="Main fixed-budget benchmark protocol.",
-    frame_budget=MAIN_FRAME_BUDGET,
-)
-
-ALL_PROTOCOLS = {MAIN_PROTOCOL.protocol_id: MAIN_PROTOCOL}
-
-
-def get_protocol(protocol_id: str) -> ProtocolSpec:
-    try:
-        return ALL_PROTOCOLS[protocol_id]
-    except KeyError as exc:
-        raise KeyError(
-            f"unknown protocol_id: {protocol_id}; current prepared-data support is main-only"
-        ) from exc
-
-
-def protocol_supports_task(protocol: ProtocolSpec, task_name: str) -> bool:
-    del task_name
-    return protocol.protocol_id == MAIN_PROTOCOL.protocol_id
-
 
 def _remove_duplicates(values: Iterable[int]) -> list[int]:
     deduped: list[int] = []
@@ -67,42 +45,151 @@ def uniform_sample_closed_interval(start: int, end: int, budget: int) -> list[in
     return _remove_duplicates(samples)
 
 
-def sample_frames_for_sample(sample: SampleRecord, protocol: ProtocolSpec) -> list[int]:
-    if protocol.protocol_id != MAIN_PROTOCOL.protocol_id:
-        raise ValueError(
-            f"unsupported protocol_id {protocol.protocol_id!r}; current prepared-data support is main-only"
+class BaseProtocol(ABC):
+    """Runtime sampling protocol."""
+
+    @property
+    @abstractmethod
+    def protocol_id(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        raise NotImplementedError
+
+    def supports_task(self, task_name: str) -> bool:
+        del task_name
+        return True
+
+    @abstractmethod
+    def sample_frames(self, sample: SampleRecord) -> list[int]:
+        raise NotImplementedError
+
+    def project_question_window(
+        self,
+        sample: SampleRecord,
+        sampled_frames_original: list[int],
+    ) -> tuple[int, int] | None:
+        if sample.q_window is None:
+            return None
+        return tuple(
+            original_interval_to_sampled_interval(
+                sample.q_window[0],
+                sample.q_window[1],
+                sampled_frames_original,
+            )
         )
-    total_frames = sample.video_metadata.total_frames
-    if sample.task_name in SINGLE_FRAME_TASKS:
-        if sample.timestamp_frame is None:
-            raise ValueError(f"{sample.sample_id} is missing timestamp_frame")
-        return [sample.timestamp_frame]
-    if sample.task_name == TASK_STG:
+
+    def project_answer_window(
+        self,
+        sample: SampleRecord,
+        sampled_frames_original: list[int],
+    ) -> tuple[int, int] | None:
         if sample.a_window is None:
-            raise ValueError(f"{sample.sample_id} is missing A_window_frame")
-        answer_start, answer_end = sample.a_window
-        visible_start = clip_index(answer_start - STG_EXPANSION_FRAMES, total_frames)
-        visible_end = clip_index(answer_end + STG_EXPANSION_FRAMES, total_frames)
-        if visible_start > visible_end:
-            visible_start, visible_end = visible_end, visible_start
-        return uniform_sample_closed_interval(
-            visible_start,
-            visible_end,
-            protocol.frame_budget,
+            return None
+        return tuple(
+            original_interval_to_sampled_interval(
+                sample.a_window[0],
+                sample.a_window[1],
+                sampled_frames_original,
+            )
         )
-    if sample.q_window is None:
-        raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
-    q_start, q_end = _clip_closed_interval(
-        sample.q_window[0],
-        sample.q_window[1],
-        total_frames,
-    )
-    interval_length = q_end - q_start + 1
-    if interval_length <= SHORT_WINDOW_FRAMES:
-        visible_start = max(0, q_end - SHORT_WINDOW_FRAMES + 1)
-        candidates = list(range(q_end, visible_start - 1, -5))
-        return list(reversed(candidates))
-    return uniform_sample_closed_interval(q_start, q_end, protocol.frame_budget)
+
+    def to_manifest_dict(self) -> dict[str, Any]:
+        return {
+            "protocol_id": self.protocol_id,
+            "description": self.description,
+        }
+
+
+class MainProtocol(BaseProtocol):
+    @property
+    def protocol_id(self) -> str:
+        return "main"
+
+    @property
+    def description(self) -> str:
+        return "Main fixed-budget benchmark protocol."
+
+    @property
+    def frame_budget(self) -> int:
+        return MAIN_FRAME_BUDGET
+
+    def sample_frames(self, sample: SampleRecord) -> list[int]:
+        total_frames = sample.video_metadata.total_frames
+        if sample.task_name in SINGLE_FRAME_TASKS:
+            if sample.timestamp_frame is None:
+                raise ValueError(f"{sample.sample_id} is missing timestamp_frame")
+            return [sample.timestamp_frame]
+        if sample.task_name == TASK_STG:
+            if sample.a_window is None:
+                raise ValueError(f"{sample.sample_id} is missing A_window_frame")
+            answer_start, answer_end = sample.a_window
+            visible_start = clip_index(answer_start - STG_EXPANSION_FRAMES, total_frames)
+            visible_end = clip_index(answer_end + STG_EXPANSION_FRAMES, total_frames)
+            if visible_start > visible_end:
+                visible_start, visible_end = visible_end, visible_start
+            return uniform_sample_closed_interval(
+                visible_start,
+                visible_end,
+                self.frame_budget,
+            )
+        if sample.q_window is None:
+            raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
+        q_start, q_end = _clip_closed_interval(
+            sample.q_window[0],
+            sample.q_window[1],
+            total_frames,
+        )
+        interval_length = q_end - q_start + 1
+        if interval_length <= SHORT_WINDOW_FRAMES:
+            visible_start = max(0, q_end - SHORT_WINDOW_FRAMES + 1)
+            candidates = list(range(q_end, visible_start - 1, -5))
+            return list(reversed(candidates))
+        return uniform_sample_closed_interval(q_start, q_end, self.frame_budget)
+
+    def to_manifest_dict(self) -> dict[str, Any]:
+        return {
+            **super().to_manifest_dict(),
+            "frame_budget": self.frame_budget,
+            "sampling": "main_fixed_budget",
+        }
+
+
+MAIN_PROTOCOL = MainProtocol()
+ALL_PROTOCOLS = {MAIN_PROTOCOL.protocol_id: MAIN_PROTOCOL}
+
+
+def get_protocol(protocol_id: str) -> BaseProtocol:
+    try:
+        return ALL_PROTOCOLS[protocol_id]
+    except KeyError as exc:
+        raise KeyError(f"unknown built-in protocol_id: {protocol_id!r}") from exc
+
+
+def resolve_protocol(spec: str) -> BaseProtocol:
+    if spec in ALL_PROTOCOLS:
+        return ALL_PROTOCOLS[spec]
+    if ":" not in spec:
+        raise ValueError("protocol spec must be a built-in id or 'module.path:ClassName'")
+    module_name, class_name = spec.split(":", maxsplit=1)
+    module = importlib.import_module(module_name)
+    protocol_cls = getattr(module, class_name)
+    protocol = protocol_cls()
+    if not isinstance(protocol, BaseProtocol):
+        raise TypeError(f"{spec} did not resolve to a BaseProtocol instance")
+    if not protocol.protocol_id:
+        raise ValueError(f"{spec} produced an empty protocol_id")
+    return protocol
+
+
+def protocol_supports_task(protocol: BaseProtocol, task_name: str) -> bool:
+    return protocol.supports_task(task_name)
+
+
+def sample_frames_for_sample(sample: SampleRecord, protocol: BaseProtocol) -> list[int]:
+    return protocol.sample_frames(sample)
 
 
 def sampled_to_original_mapping(sampled_frames_original: list[int]) -> dict[int, int]:

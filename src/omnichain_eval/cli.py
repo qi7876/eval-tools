@@ -31,6 +31,7 @@ from .experiments import (
 )
 from .judge import JudgeResponseFormatExhaustedError, OpenAIJudgeClient, StaticJudgeClient
 from .metrics import evaluate_sample
+from .protocols import resolve_protocol
 from .prompting import (
     PromptTemplate,
     build_chain_history,
@@ -468,6 +469,7 @@ def cmd_prepare_data(args: argparse.Namespace) -> int:
 
 def cmd_run_eval(args: argparse.Namespace) -> int:
     config = load_run_eval_config(Path(args.config))
+    runtime_protocol = resolve_protocol(config.protocol)
     prepared_samples = load_prepared_for_protocol(config.prepared_root, config.protocol)
     prepared_by_sample_id = {sample.sample_id: sample for sample in prepared_samples}
     prompt_pack = load_prompt_pack(config.prompt_root)
@@ -515,7 +517,8 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
 
     artifacts_root = ensure_directory(config.artifacts_root)
     run_dir = ensure_directory(
-        artifacts_root / (config.run_name or _default_run_name(model_name, config.protocol))
+        artifacts_root
+        / (config.run_name or _default_run_name(model_name, runtime_protocol.protocol_id))
     )
     predictions_path = run_dir / "predictions.jsonl"
     structured_predictions_path = run_dir / "structured_predictions.jsonl"

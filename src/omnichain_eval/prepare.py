@@ -28,13 +28,14 @@ from .coordinates import (
 )
 from .dataset import dataset_fingerprint, scan_dataset_report, summarize_scan_report
 from .protocols import (
-    get_protocol,
+    BaseProtocol,
     original_interval_to_sampled_interval,
     protocol_supports_task,
+    resolve_protocol,
     sample_frames_for_sample,
     sampled_to_original_mapping,
 )
-from .schema import PreparedSample, ProtocolSpec, SampleRecord
+from .schema import PreparedSample, SampleRecord
 from .utils import (
     ensure_directory,
     read_json,
@@ -316,7 +317,7 @@ def _draw_oracle_tracking_overlay(
 
 def build_prepared_sample(
     sample: SampleRecord,
-    protocol: ProtocolSpec,
+    protocol: BaseProtocol,
     sampled_frames_original: list[int],
     bundle_dir: Path,
     decoded_frames: dict[int, Image.Image],
@@ -381,17 +382,7 @@ def build_prepared_sample(
                 "`frames` in [prepare_data].media_formats"
             )
         raise ValueError(f"{sample.sample_id}: no prepared media produced")
-    q_window_sampled = (
-        tuple(
-            original_interval_to_sampled_interval(
-                sample.q_window[0],
-                sample.q_window[1],
-                sampled_frames_original,
-            )
-        )
-        if sample.q_window is not None
-        else None
-    )
+    q_window_sampled = protocol.project_question_window(sample, sampled_frames_original)
     prepared = PreparedSample(
         sample_id=sample.sample_id,
         annotation_id=sample.annotation_id,
@@ -449,7 +440,7 @@ def _protocol_stats(prepared_samples: list[PreparedSample]) -> dict[str, Any]:
 def _build_video_cache_entries(
     video_path: Path,
     video_records: list[SampleRecord],
-    protocol: ProtocolSpec,
+    protocol: BaseProtocol,
     samples_root: Path,
     *,
     media_formats: set[str],
@@ -493,7 +484,8 @@ def _build_video_cache_entries(
 
 def build_protocol_cache(
     records: list[SampleRecord],
-    protocol: ProtocolSpec,
+    protocol: BaseProtocol,
+    protocol_spec: str,
     prepared_root: Path,
     *,
     data_status: dict[str, Any],
@@ -548,7 +540,9 @@ def build_protocol_cache(
     write_json(
         protocol_root / "build_manifest.json",
         {
-            "protocol": protocol.to_dict(),
+            "protocol_id": protocol.protocol_id,
+            "protocol_spec": protocol_spec,
+            "protocol_manifest": protocol.to_manifest_dict(),
             "data_status": data_status,
             "supported_dataset_fingerprint": dataset_fingerprint(records),
             "num_prepared_samples": len(prepared_samples),
@@ -569,7 +563,7 @@ def build_protocol_cache(
 def build_prepared_data(
     data_root: Path,
     prepared_root: Path,
-    protocol_ids: list[str],
+    protocol_specs: list[str],
     *,
     media_formats: list[str] | None = None,
     generate_oracle_visual_media: bool = False,
@@ -594,12 +588,21 @@ def build_prepared_data(
     records = scan_report.supported_records
     data_status = summarize_scan_report(scan_report)
     results = []
-    for protocol_id in protocol_ids:
-        protocol = get_protocol(protocol_id)
+    seen_protocol_ids: dict[str, str] = {}
+    for protocol_spec in protocol_specs:
+        protocol = resolve_protocol(protocol_spec)
+        existing_spec = seen_protocol_ids.get(protocol.protocol_id)
+        if existing_spec is not None and existing_spec != protocol_spec:
+            raise ValueError(
+                f"prepare-data protocol specs {existing_spec!r} and {protocol_spec!r} "
+                f"both resolve to protocol_id {protocol.protocol_id!r}"
+            )
+        seen_protocol_ids[protocol.protocol_id] = protocol_spec
         results.append(
             build_protocol_cache(
                 records,
                 protocol,
+                protocol_spec,
                 prepared_root,
                 data_status=data_status,
                 media_formats=requested_media_formats,
@@ -610,9 +613,27 @@ def build_prepared_data(
     return results
 
 
-def load_prepared_samples(prepared_root: Path, protocol_id: str) -> list[PreparedSample]:
+def load_prepared_samples(prepared_root: Path, protocol_spec: str) -> list[PreparedSample]:
+    protocol = resolve_protocol(protocol_spec)
+    expected_manifest = protocol.to_manifest_dict()
+    protocol_id = protocol.protocol_id
     protocol_root = prepared_root / protocol_id
     build_manifest = read_json(protocol_root / "build_manifest.json")
+    if build_manifest.get("protocol_id") != protocol_id:
+        raise ValueError(
+            f"{protocol_root}: prepared protocol_id {build_manifest.get('protocol_id')!r} "
+            f"does not match requested {protocol_id!r}; rebuild prepared data"
+        )
+    if build_manifest.get("protocol_spec") != protocol_spec:
+        raise ValueError(
+            f"{protocol_root}: prepared protocol_spec {build_manifest.get('protocol_spec')!r} "
+            f"does not match requested {protocol_spec!r}; rebuild prepared data"
+        )
+    if build_manifest.get("protocol_manifest") != expected_manifest:
+        raise ValueError(
+            f"{protocol_root}: prepared protocol manifest does not match the current "
+            f"definition for {protocol_spec!r}; rebuild prepared data"
+        )
     if build_manifest.get("coordinate_system") != COORDINATE_SYSTEM_NORMALIZED_1000:
         raise ValueError(
             f"{protocol_root}: unsupported prepared coordinate_system "
@@ -645,5 +666,7 @@ def load_prepared_samples(prepared_root: Path, protocol_id: str) -> list[Prepare
                 (manifest_path.parent / sample.oracle_visual_sampled_video_file).resolve()
             )
         sample.metadata["bundle_dir"] = str(manifest_path.parent.resolve())
+        sample.metadata["protocol_spec"] = protocol_spec
+        sample.metadata["protocol_manifest"] = expected_manifest
         prepared.append(sample)
     return prepared

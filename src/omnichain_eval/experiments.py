@@ -425,5 +425,5 @@ def summarize_experiment_b(
     return summary
 
 
-def load_prepared_for_protocol(prepared_root: Path, protocol_id: str) -> list[PreparedSample]:
-    return load_prepared_samples(prepared_root, protocol_id)
+def load_prepared_for_protocol(prepared_root: Path, protocol_spec: str) -> list[PreparedSample]:
+    return load_prepared_samples(prepared_root, protocol_spec)

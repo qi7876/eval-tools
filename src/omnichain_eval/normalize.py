@@ -17,6 +17,7 @@ from .constants import (
 from .schema import PreparedSample, StructuredPredictionResult
 
 _COORD_EPSILON = 1e-6
+_CORNER_BOX_SENTINEL = [-1.0, -1.0, -1.0, -1.0]
 
 
 def _coerce_text_field(payload: dict[str, Any], errors: list[str]) -> str:
@@ -49,7 +50,7 @@ def _coerce_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
     return parsed
 
 
-def _is_scoreboard_sentinel(value: Any) -> bool:
+def _is_corner_box_sentinel(value: Any) -> bool:
     if not isinstance(value, list) or len(value) != 4:
         return False
     try:
@@ -105,17 +106,16 @@ def _coerce_normalized_mot_box(value: Any, field_name: str, errors: list[str]) -
 
 
 def _scoreboard_bbox_or_sentinel(value: Any, warnings: list[str]) -> list[float]:
-    sentinel = [-1.0, -1.0, -1.0, -1.0]
     if value is None:
         warnings.append("bbox missing; using sentinel bbox")
-        return sentinel
-    if _is_scoreboard_sentinel(value):
-        return sentinel
+        return list(_CORNER_BOX_SENTINEL)
+    if _is_corner_box_sentinel(value):
+        return list(_CORNER_BOX_SENTINEL)
     errors: list[str] = []
     bbox = _coerce_normalized_corner_box(value, "bbox", errors)
     if len(bbox) != 4 or errors:
         warnings.append("bbox invalid; using sentinel bbox")
-        return sentinel
+        return list(_CORNER_BOX_SENTINEL)
     return bbox
 
 
@@ -141,8 +141,10 @@ def _coerce_labeled_objects(
     value: Any,
     prepared_sample: PreparedSample,
     errors: list[str],
+    warnings: list[str],
 ) -> list[dict[str, Any]]:
     required_labels = _required_object_labels(prepared_sample, errors)
+    required_label_set = set(required_labels)
     if not isinstance(value, list):
         errors.append("objects must be a list")
         return []
@@ -151,7 +153,7 @@ def _coerce_labeled_objects(
         if not isinstance(row, dict):
             errors.append(f"objects[{index}] must be an object")
             continue
-        if {"label", "bbox"} - set(row):
+        if "label" not in row:
             errors.append(f"objects[{index}] must contain label and bbox")
             continue
         label = str(row["label"]).strip()
@@ -161,18 +163,34 @@ def _coerce_labeled_objects(
         if label in predicted_by_label:
             errors.append(f"duplicate object label: {label}")
             continue
-        bbox = _coerce_normalized_corner_box(row["bbox"], f"objects[{index}].bbox", errors)
-        if len(bbox) != 4:
-            continue
-        predicted_by_label[label] = {"label": label, "bbox": bbox}
-
-    required_label_set = set(required_labels)
-    for label in sorted(predicted_by_label):
         if label not in required_label_set:
             errors.append(f"unexpected object label: {label}")
+            continue
+        bbox_value = row.get("bbox")
+        if bbox_value is None:
+            warnings.append(f"objects[{index}].bbox missing; using sentinel bbox")
+            bbox = list(_CORNER_BOX_SENTINEL)
+        elif _is_corner_box_sentinel(bbox_value):
+            bbox = list(_CORNER_BOX_SENTINEL)
+        else:
+            bbox_errors: list[str] = []
+            bbox = _coerce_normalized_corner_box(
+                bbox_value,
+                f"objects[{index}].bbox",
+                bbox_errors,
+            )
+            if len(bbox) != 4 or bbox_errors:
+                warnings.append(f"objects[{index}].bbox invalid; using sentinel bbox")
+                bbox = list(_CORNER_BOX_SENTINEL)
+        predicted_by_label[label] = {"label": label, "bbox": bbox}
+
     for label in required_labels:
         if label not in predicted_by_label:
-            errors.append(f"missing object label: {label}")
+            warnings.append(f"missing object label: {label}; using sentinel bbox")
+            predicted_by_label[label] = {
+                "label": label,
+                "bbox": list(_CORNER_BOX_SENTINEL),
+            }
     if errors:
         return []
     return [predicted_by_label[label] for label in required_labels]
@@ -319,6 +337,7 @@ def validate_structured_prediction(
                 structured_prediction.get("objects"),
                 prepared_sample,
                 errors,
+                warnings,
             ),
         }
         return StructuredPredictionResult(

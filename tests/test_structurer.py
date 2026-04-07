@@ -234,8 +234,43 @@ def test_rendered_structurer_prompt_for_objects_spatial_includes_label_rules():
 
     assert "Use exactly these object labels" in rendered.prompt_text
     assert '["Player A", "Player B"]' in rendered.prompt_text
+    assert "Output exactly one object entry for each required label." in rendered.prompt_text
     assert "Match boxes by explicit label, not by first/second position." in rendered.prompt_text
+    assert "bbox = [-1, -1, -1, -1]" in rendered.prompt_text
     assert "Question:" not in rendered.prompt_text
+
+
+def test_normal_structurer_for_object_spatial_fills_missing_boxes_with_sentinel():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    result = service.structure(
+        _sample(
+            task_name="Objects_Spatial_Relationships",
+            question_text="What is the spatial relationship between Player A and Player B?",
+            reference_payload={
+                "text": "Player A is to the right of Player B.",
+                "objects": [
+                    {"label": "Player A", "bbox": [10, 20, 30, 40]},
+                    {"label": "Player B", "bbox": [50, 60, 70, 80]},
+                ],
+            },
+        ),
+        '{"text": "right of", "objects": [{"label": "Player A"}]}',
+    )
+
+    assert result.structured_prediction == {
+        "text": "right of",
+        "objects": [
+            {"label": "Player A", "bbox": [-1.0, -1.0, -1.0, -1.0]},
+            {"label": "Player B", "bbox": [-1.0, -1.0, -1.0, -1.0]},
+        ],
+    }
+    assert "objects[0].bbox missing; using sentinel bbox" in result.warnings
+    assert "missing object label: Player B; using sentinel bbox" in result.warnings
 
 
 def test_load_structurer_prompt_pack_rejects_removed_context_variables(tmp_path):

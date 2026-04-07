@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import JUDGE_MODEL_DEFAULT, STRUCTURER_MODEL_DEFAULT
-from .protocols import ALL_PROTOCOLS
+from .protocols import resolve_protocol
 
 
 def _default_openai_extra_body() -> dict[str, Any]:
@@ -63,34 +63,45 @@ def _resolve_path_list(base_dir: Path, raw: list[str] | None, *, default: list[s
     return [_resolve_path(base_dir, value) for value in values if value is not None]  # type: ignore[list-item]
 
 
-def _normalize_prepare_protocol_ids(value: Any) -> list[str]:
+def _normalize_prepare_protocol_specs(value: Any) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError("[prepare_data].protocols must be a list of strings")
     deduplicated: list[str] = []
-    seen: set[str] = set()
-    for protocol_id in value:
-        if protocol_id not in ALL_PROTOCOLS:
+    seen_specs: set[str] = set()
+    seen_protocol_ids: dict[str, str] = {}
+    for protocol_spec in value:
+        try:
+            protocol = resolve_protocol(protocol_spec)
+        except Exception as exc:  # noqa: BLE001
             raise ValueError(
-                "[prepare_data].protocols only supports ['main'] in this version; "
-                f"got {protocol_id!r}"
-            )
-        if protocol_id in seen:
+                f"[prepare_data].protocols contains an invalid protocol spec {protocol_spec!r}: {exc}"
+            ) from exc
+        if protocol_spec in seen_specs:
             continue
-        deduplicated.append(protocol_id)
-        seen.add(protocol_id)
+        existing_spec = seen_protocol_ids.get(protocol.protocol_id)
+        if existing_spec is not None and existing_spec != protocol_spec:
+            raise ValueError(
+                "[prepare_data].protocols must resolve to unique protocol_id values; "
+                f"{existing_spec!r} and {protocol_spec!r} both resolve to {protocol.protocol_id!r}"
+            )
+        deduplicated.append(protocol_spec)
+        seen_specs.add(protocol_spec)
+        seen_protocol_ids[protocol.protocol_id] = protocol_spec
     if not deduplicated:
         raise ValueError("[prepare_data].protocols must not be empty")
     return deduplicated
 
 
-def _normalize_run_eval_protocol_id(value: Any) -> str:
-    protocol_id = str(value)
-    if protocol_id not in ALL_PROTOCOLS:
+def _normalize_run_eval_protocol_spec(value: Any) -> str:
+    protocol_spec = str(value)
+    try:
+        resolve_protocol(protocol_spec)
+    except Exception as exc:  # noqa: BLE001
         raise ValueError(
-            "[run_eval].protocol only supports 'main' in this version; "
-            f"got {protocol_id!r}"
-        )
-    return protocol_id
+            f"[run_eval].protocol must be a built-in protocol id or 'module.path:ClassName'; "
+            f"got {protocol_spec!r}: {exc}"
+        ) from exc
+    return protocol_spec
 
 
 @dataclass(slots=True)
@@ -203,7 +214,7 @@ def load_build_chain_manifest_config(path: Path) -> BuildChainManifestConfig:
 def load_prepare_data_config(path: Path) -> PrepareDataConfig:
     payload, base_dir = _load_toml(path)
     table = _table(payload, "prepare_data")
-    protocols = _normalize_prepare_protocol_ids(table.get("protocols", ["main"]))
+    protocols = _normalize_prepare_protocol_specs(table.get("protocols", ["main"]))
     media_formats = table.get("media_formats", ["frames"])
     if not isinstance(media_formats, list) or not all(
         isinstance(value, str) for value in media_formats
@@ -316,7 +327,7 @@ def load_run_eval_config(path: Path) -> RunEvalConfig:
             table.get("prepared_root"),
             default="prepared_data",
         ),  # type: ignore[arg-type]
-        protocol=_normalize_run_eval_protocol_id(table.get("protocol", "main")),
+        protocol=_normalize_run_eval_protocol_spec(table.get("protocol", "main")),
         artifacts_root=_resolve_path(
             base_dir,
             table.get("artifacts_root"),

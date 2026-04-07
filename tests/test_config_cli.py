@@ -1,10 +1,67 @@
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
 from omnichain_eval.cli import main
 from omnichain_eval.config import load_prepare_data_config, load_run_eval_config
 from omnichain_eval.protocols import ALL_PROTOCOLS
+
+
+def _write_protocol_module(tmp_path: Path) -> str:
+    module_name = "custom_protocols_config"
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        dedent(
+            """
+            from omnichain_eval.protocols import BaseProtocol
+
+
+            class NativeEightProtocol(BaseProtocol):
+                @property
+                def protocol_id(self) -> str:
+                    return "native_uniform_8"
+
+                @property
+                def description(self) -> str:
+                    return "Eight-frame custom protocol."
+
+                def sample_frames(self, sample):
+                    del sample
+                    return [0, 1, 2, 3, 4, 5, 6, 7]
+
+                def to_manifest_dict(self):
+                    return {
+                        **super().to_manifest_dict(),
+                        "sampling": "uniform",
+                        "frame_budget": 8,
+                    }
+
+
+            class NativeEightProtocolAlt(BaseProtocol):
+                @property
+                def protocol_id(self) -> str:
+                    return "native_uniform_8"
+
+                @property
+                def description(self) -> str:
+                    return "Alternate custom protocol."
+
+                def sample_frames(self, sample):
+                    del sample
+                    return [0, 1, 2, 3]
+
+                def to_manifest_dict(self):
+                    return {
+                        **super().to_manifest_dict(),
+                        "sampling": "uniform",
+                        "frame_budget": 4,
+                    }
+            """
+        ),
+        encoding="utf-8",
+    )
+    return module_name
 
 
 def test_load_run_eval_config_resolves_paths_and_judge_options(tmp_path):
@@ -404,14 +461,36 @@ workers = 0
         load_prepare_data_config(config_path)
 
 
-def test_load_prepare_data_config_rejects_removed_experiment_d_protocol(tmp_path):
+def test_load_prepare_data_config_accepts_custom_protocol_spec(tmp_path, monkeypatch):
+    module_name = _write_protocol_module(tmp_path)
+    monkeypatch.syspath_prepend(tmp_path)
     config_path = tmp_path / "prepare.toml"
     config_path.write_text(
-        """
+        f"""
 [prepare_data]
 data_root = "data"
 prepared_root = "prepared_data"
-protocols = ["main", "expd_window_32s_2fps"]
+protocols = ["main", "{module_name}:NativeEightProtocol"]
+workers = 1
+""".strip(),
+        encoding="utf-8",
+    )
+
+    config = load_prepare_data_config(config_path)
+
+    assert config.protocols == ["main", f"{module_name}:NativeEightProtocol"]
+
+
+def test_load_prepare_data_config_rejects_duplicate_protocol_ids(tmp_path, monkeypatch):
+    module_name = _write_protocol_module(tmp_path)
+    monkeypatch.syspath_prepend(tmp_path)
+    config_path = tmp_path / "prepare.toml"
+    config_path.write_text(
+        f"""
+[prepare_data]
+data_root = "data"
+prepared_root = "prepared_data"
+protocols = ["{module_name}:NativeEightProtocol", "{module_name}:NativeEightProtocolAlt"]
 workers = 1
 """.strip(),
         encoding="utf-8",
@@ -419,18 +498,20 @@ workers = 1
 
     with pytest.raises(
         ValueError,
-        match=r"\[prepare_data\]\.protocols only supports \['main'\] in this version",
+        match=r"\[prepare_data\]\.protocols must resolve to unique protocol_id values",
     ):
         load_prepare_data_config(config_path)
 
 
-def test_load_run_eval_config_rejects_removed_experiment_d_protocol(tmp_path):
+def test_load_run_eval_config_accepts_custom_protocol_spec(tmp_path, monkeypatch):
+    module_name = _write_protocol_module(tmp_path)
+    monkeypatch.syspath_prepend(tmp_path)
     config_path = tmp_path / "run_eval.toml"
     config_path.write_text(
-        """
+        f"""
 [run_eval]
 prepared_root = "prepared_data"
-protocol = "expd_window_32s_2fps"
+protocol = "{module_name}:NativeEightProtocol"
 prompt_root = "prompts/benchmark_v1"
 adapter = "mock"
 
@@ -444,11 +525,9 @@ prompt_root = "prompts/structurer_v1"
         encoding="utf-8",
     )
 
-    with pytest.raises(
-        ValueError,
-        match=r"\[run_eval\]\.protocol only supports 'main' in this version",
-    ):
-        load_run_eval_config(config_path)
+    config = load_run_eval_config(config_path)
+
+    assert config.protocol == f"{module_name}:NativeEightProtocol"
 
 
 EXAMPLE_CONFIG_ROOT = Path(__file__).resolve().parent.parent / "configs" / "examples"

@@ -81,7 +81,6 @@ def test_validate_object_spatial_rejects_duplicate_missing_and_extra_labels():
         },
     )
     assert "duplicate object label: Player A" in duplicate.errors
-    assert "missing object label: Player B" in duplicate.errors
 
     extra = validate_structured_prediction(
         sample,
@@ -98,10 +97,35 @@ def test_validate_object_spatial_rejects_duplicate_missing_and_extra_labels():
     assert "unexpected object label: Player C" in extra.errors
 
 
-def test_validate_object_spatial_rejects_out_of_range_normalized_bbox():
+def test_validate_object_spatial_uses_sentinel_for_missing_label():
     sample = _sample()
 
     result = validate_structured_prediction(
+        sample,
+        raw_output="{}",
+        structured_prediction={
+            "text": "right of",
+            "objects": [
+                {"label": "Player A", "bbox": [10, 20, 30, 40]},
+            ],
+        },
+    )
+
+    assert result.errors == []
+    assert result.structured_prediction == {
+        "text": "right of",
+        "objects": [
+            {"label": "Player A", "bbox": [10.0, 20.0, 30.0, 40.0]},
+            {"label": "Player B", "bbox": [-1.0, -1.0, -1.0, -1.0]},
+        ],
+    }
+    assert "missing object label: Player B; using sentinel bbox" in result.warnings
+
+
+def test_validate_object_spatial_uses_sentinel_for_invalid_or_missing_bbox():
+    sample = _sample()
+
+    invalid = validate_structured_prediction(
         sample,
         raw_output="{}",
         structured_prediction={
@@ -113,9 +137,37 @@ def test_validate_object_spatial_rejects_out_of_range_normalized_bbox():
         },
     )
 
-    assert (
-        "objects[0].bbox must stay within normalized_1000 range [0, 1000]" in result.errors
+    assert invalid.errors == []
+    assert invalid.structured_prediction == {
+        "text": "right of",
+        "objects": [
+            {"label": "Player A", "bbox": [-1.0, -1.0, -1.0, -1.0]},
+            {"label": "Player B", "bbox": [50.0, 60.0, 70.0, 80.0]},
+        ],
+    }
+    assert "objects[0].bbox invalid; using sentinel bbox" in invalid.warnings
+
+    missing = validate_structured_prediction(
+        sample,
+        raw_output="{}",
+        structured_prediction={
+            "text": "right of",
+            "objects": [
+                {"label": "Player A"},
+                {"label": "Player B", "bbox": [50, 60, 70, 80]},
+            ],
+        },
     )
+
+    assert missing.errors == []
+    assert missing.structured_prediction == {
+        "text": "right of",
+        "objects": [
+            {"label": "Player A", "bbox": [-1.0, -1.0, -1.0, -1.0]},
+            {"label": "Player B", "bbox": [50.0, 60.0, 70.0, 80.0]},
+        ],
+    }
+    assert "objects[0].bbox missing; using sentinel bbox" in missing.warnings
 
 
 def test_evaluate_object_spatial_matches_boxes_by_label():
@@ -161,4 +213,37 @@ def test_evaluate_object_spatial_fails_when_required_label_is_missing():
         },
     )
 
-    assert "missing object label: Player B" in validation.errors
+    assert validation.errors == []
+    assert validation.structured_prediction is not None
+    assert validation.structured_prediction["objects"][1]["bbox"] == [-1.0, -1.0, -1.0, -1.0]
+    assert "missing object label: Player B; using sentinel bbox" in validation.warnings
+
+
+def test_evaluate_object_spatial_keeps_text_judgment_but_fails_bbox_component_for_sentinel():
+    sample = _sample()
+    record = _record(
+        {
+            "text": "Player A is to the right of Player B.",
+            "objects": [
+                {"label": "Player A", "bbox": [10, 20, 30, 40]},
+                {"label": "Player B", "bbox": [-1, -1, -1, -1]},
+            ],
+        }
+    )
+
+    evaluation = evaluate_sample(
+        sample,
+        record,
+        judge_client=StaticJudgeClient(always_pass=True),
+    )
+
+    assert evaluation.component_metrics["object_ious"] == {
+        "Player A": 1.0,
+        "Player B": 0.0,
+    }
+    assert evaluation.component_pass["object_passes"] == {
+        "Player A": 1,
+        "Player B": 0,
+    }
+    assert evaluation.component_pass["judge_pass"] == 1
+    assert evaluation.task_pass == 0

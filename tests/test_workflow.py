@@ -1,6 +1,7 @@
 import json
 import shutil
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 from PIL import Image
@@ -36,6 +37,112 @@ def fake_decode_selected_frames(video_path: Path, frame_indices: list[int]):
         frame_index: Image.new("RGB", (64, 64), color=(frame_index % 255, 10, 20))
         for frame_index in frame_indices
     }
+
+
+def write_custom_protocol_module(tmp_path: Path) -> str:
+    module_name = "custom_protocols_workflow"
+    module_path = tmp_path / f"{module_name}.py"
+    module_path.write_text(
+        dedent(
+            """
+            from omnichain_eval.constants import SINGLE_FRAME_TASKS, TASK_STG
+            from omnichain_eval.protocols import BaseProtocol, uniform_sample_closed_interval
+            from omnichain_eval.utils import clip_index
+
+
+            def _clip_closed_interval(start: int, end: int, total_frames: int) -> tuple[int, int]:
+                clipped_start = clip_index(start, total_frames)
+                clipped_end = clip_index(end, total_frames)
+                if clipped_start > clipped_end:
+                    clipped_start, clipped_end = clipped_end, clipped_start
+                return clipped_start, clipped_end
+
+
+            class EightFrameUniformProtocol(BaseProtocol):
+                @property
+                def protocol_id(self) -> str:
+                    return "native_uniform_8"
+
+                @property
+                def description(self) -> str:
+                    return "Eight-frame uniform sampling."
+
+                def sample_frames(self, sample):
+                    total_frames = sample.video_metadata.total_frames
+                    if sample.task_name in SINGLE_FRAME_TASKS:
+                        if sample.timestamp_frame is None:
+                            raise ValueError(f"{sample.sample_id} is missing timestamp_frame")
+                        return [sample.timestamp_frame]
+                    if sample.task_name == TASK_STG:
+                        if sample.a_window is None:
+                            raise ValueError(f"{sample.sample_id} is missing A_window_frame")
+                        start, end = _clip_closed_interval(
+                            sample.a_window[0],
+                            sample.a_window[1],
+                            total_frames,
+                        )
+                        return uniform_sample_closed_interval(start, end, 8)
+                    if sample.q_window is None:
+                        raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
+                    start, end = _clip_closed_interval(
+                        sample.q_window[0],
+                        sample.q_window[1],
+                        total_frames,
+                    )
+                    return uniform_sample_closed_interval(start, end, 8)
+
+                def to_manifest_dict(self):
+                    return {
+                        **super().to_manifest_dict(),
+                        "sampling": "uniform",
+                        "frame_budget": 8,
+                    }
+
+
+            class EightFrameUniformProtocolAlt(BaseProtocol):
+                @property
+                def protocol_id(self) -> str:
+                    return "native_uniform_8"
+
+                @property
+                def description(self) -> str:
+                    return "Alternate eight-frame uniform sampling."
+
+                def sample_frames(self, sample):
+                    total_frames = sample.video_metadata.total_frames
+                    if sample.task_name in SINGLE_FRAME_TASKS:
+                        if sample.timestamp_frame is None:
+                            raise ValueError(f"{sample.sample_id} is missing timestamp_frame")
+                        return [sample.timestamp_frame]
+                    if sample.task_name == TASK_STG:
+                        if sample.a_window is None:
+                            raise ValueError(f"{sample.sample_id} is missing A_window_frame")
+                        start, end = _clip_closed_interval(
+                            sample.a_window[0],
+                            sample.a_window[1],
+                            total_frames,
+                        )
+                        return uniform_sample_closed_interval(start, end, 4)
+                    if sample.q_window is None:
+                        raise ValueError(f"{sample.sample_id} is missing Q_window_frame")
+                    start, end = _clip_closed_interval(
+                        sample.q_window[0],
+                        sample.q_window[1],
+                        total_frames,
+                    )
+                    return uniform_sample_closed_interval(start, end, 4)
+
+                def to_manifest_dict(self):
+                    return {
+                        **super().to_manifest_dict(),
+                        "sampling": "uniform",
+                        "frame_budget": 4,
+                    }
+            """
+        ),
+        encoding="utf-8",
+    )
+    return module_name
 
 
 def build_fixture_with_unsupported_task(tmp_path: Path) -> Path:
@@ -247,6 +354,50 @@ def test_prepare_data_writes_sampled_query_interval(monkeypatch, tmp_path):
     assert actions_sample.q_window_sampled == (20, 30)
     assert downstream_sample.q_window == (100, 150)
     assert downstream_sample.q_window_sampled == (20, 30)
+
+
+def test_prepare_data_supports_custom_protocol_specs(monkeypatch, tmp_path):
+    module_name = write_custom_protocol_module(tmp_path)
+    monkeypatch.syspath_prepend(tmp_path)
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    protocol_spec = f"{module_name}:EightFrameUniformProtocol"
+    prepared_root = tmp_path / "prepared"
+
+    build_prepared_data(FIXTURE_ROOT, prepared_root, [protocol_spec])
+
+    build_manifest = read_json(prepared_root / "native_uniform_8" / "build_manifest.json")
+    assert build_manifest["protocol_id"] == "native_uniform_8"
+    assert build_manifest["protocol_spec"] == protocol_spec
+    assert build_manifest["protocol_manifest"]["frame_budget"] == 8
+
+    prepared_samples = load_prepared_samples(prepared_root, protocol_spec)
+    actions_sample = next(sample for sample in prepared_samples if sample.annotation_id == "2")
+    downstream_sample = next(sample for sample in prepared_samples if sample.annotation_id == "4")
+
+    assert len(actions_sample.sampled_frames_original) == 8
+    assert actions_sample.q_window_sampled == (0, 7)
+    assert downstream_sample.q_window_sampled == (0, 7)
+    assert actions_sample.metadata["protocol_spec"] == protocol_spec
+
+
+def test_load_prepared_samples_rejects_protocol_spec_mismatch(monkeypatch, tmp_path):
+    module_name = write_custom_protocol_module(tmp_path)
+    monkeypatch.syspath_prepend(tmp_path)
+    monkeypatch.setattr(
+        "omnichain_eval.prepare.decode_selected_frames",
+        fake_decode_selected_frames,
+    )
+    prepared_root = tmp_path / "prepared"
+    protocol_spec = f"{module_name}:EightFrameUniformProtocol"
+    other_protocol_spec = f"{module_name}:EightFrameUniformProtocolAlt"
+
+    build_prepared_data(FIXTURE_ROOT, prepared_root, [protocol_spec])
+
+    with pytest.raises(ValueError, match="prepared protocol_spec"):
+        load_prepared_samples(prepared_root, other_protocol_spec)
 
 
 def test_prepare_data_writes_sampled_video_when_requested(monkeypatch, tmp_path):
