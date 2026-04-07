@@ -89,75 +89,32 @@ def _judge_reference_payload(task_name: str, reference_payload: dict[str, Any]) 
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
         return {"text": reference_payload["text"]}
     if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
-        return {"reference_segments": reference_payload["segments_original"]}
+        return {"reference_segments": reference_payload["segments_sampled"]}
     raise ValueError(f"unsupported judge reference payload for {task_name}")
 
 
 def _judge_prediction_payload(
     task_name: str,
     structured_prediction: dict[str, Any],
-    *,
-    predicted_segments_original: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if task_name in TEXT_ONLY_TASKS | {TASK_AI_COACH, TASK_SCOREBOARD_SINGLE, TASK_OBJECTS_SPATIAL}:
         return {"text": structured_prediction["text"]}
     if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
-        return {"prediction_segments": predicted_segments_original or []}
+        return {"prediction_segments": structured_prediction["segments"]}
     raise ValueError(f"unsupported judge prediction payload for {task_name}")
 
 
-def _map_segments_to_original(
+def _sampled_window_for_metric(
     structured_prediction: dict[str, Any],
-    prepared_sample: PreparedSample,
-) -> tuple[list[dict[str, Any]] | None, list[str]]:
-    errors: list[str] = []
-    segments = structured_prediction.get("segments")
-    if not isinstance(segments, list):
-        return None, ["missing segments"]
-    mapped: list[dict[str, Any]] = []
-    mapping = prepared_sample.sampled_to_original
-    num_sampled_frames = len(prepared_sample.sampled_frames_original)
-    for segment in segments:
-        start = int(segment["start_sampled"])
-        end = int(segment["end_sampled"])
-        if start < 0 or end < 0 or start >= num_sampled_frames or end >= num_sampled_frames:
-            errors.append(f"segment index out of range: {start}-{end}")
-            continue
-        if start > end:
-            errors.append(f"segment start > end: {start}-{end}")
-            continue
-        mapped.append(
-            {
-                "start_frame": mapping[start],
-                "end_frame": mapping[end],
-                "text": segment["text"],
-            }
-        )
-    return (mapped if not errors else None), errors
-
-
-def _map_window_to_original(
-    structured_prediction: dict[str, Any],
-    prepared_sample: PreparedSample,
 ) -> tuple[list[int] | None, list[str]]:
-    errors: list[str] = []
     window = structured_prediction.get("time_window_sampled")
-    if not isinstance(window, list) or len(window) != 2 or len(window) == 0:
+    if not isinstance(window, list) or len(window) != 2:
         return None, ["missing time_window_sampled"]
     start = int(window[0])
     end = int(window[1])
-    if start < 0 or end < 0 or start >= len(prepared_sample.sampled_frames_original):
-        errors.append("time_window start is out of range")
-    if end >= len(prepared_sample.sampled_frames_original):
-        errors.append("time_window end is out of range")
     if start > end:
-        errors.append("time_window start is greater than end")
-    if errors:
-        return None, errors
-    return [
-        prepared_sample.sampled_to_original[start],
-        prepared_sample.sampled_to_original[end],
-    ], []
+        return None, [f"time_window_sampled start > end: {start}-{end}"]
+    return [start, end], []
 
 
 def _collapse_tracking(
@@ -238,7 +195,6 @@ def _bertscore_pair(
     task_name: str,
     reference_payload: dict[str, Any],
     structured_prediction: dict[str, Any] | None,
-    predicted_segments_original: list[dict[str, Any]] | None = None,
 ) -> tuple[str | None, str | None]:
     if structured_prediction is None:
         return None, None
@@ -246,8 +202,8 @@ def _bertscore_pair(
         return reference_payload["text"], structured_prediction["text"]
     if task_name in {TASK_CONTINUOUS_ACTIONS, TASK_CONTINUOUS_EVENTS}:
         return (
-            _linearize_segments(reference_payload["segments_original"]),
-            _linearize_segments(predicted_segments_original or []),
+            _linearize_segments(reference_payload["segments_sampled"]),
+            _linearize_segments(structured_prediction["segments"]),
         )
     return None, None
 
@@ -257,7 +213,6 @@ def _judge_textual_task(
     prepared_sample: PreparedSample,
     structured_prediction: dict[str, Any] | None,
     judge_client: JudgeClient | None,
-    predicted_segments_original: list[dict[str, Any]] | None = None,
 ) -> tuple[JudgeDecision, int]:
     if structured_prediction is None or judge_client is None:
         return default_judge_fail("missing structured prediction or judge backend"), 0
@@ -268,7 +223,6 @@ def _judge_textual_task(
     prediction_payload = _judge_prediction_payload(
         task_name,
         structured_prediction,
-        predicted_segments_original=predicted_segments_original,
     )
     decision = judge_client.judge(
         task_name,
@@ -302,7 +256,6 @@ def evaluate_sample(
     judge_decision: JudgeDecision | None = None
     warnings = list(structured_record.structuring_warnings)
     structuring_errors = list(structured_record.structuring_errors)
-    predicted_segments_original: list[dict[str, Any]] | None = None
 
     if prepared_sample.task_name == TASK_SCOREBOARD_SINGLE:
         predicted_bbox = structured.get("bbox") if structured else None
@@ -347,34 +300,20 @@ def evaluate_sample(
         component_pass["judge_pass"] = judge_pass
         task_pass = judge_pass
     elif prepared_sample.task_name == TASK_CONTINUOUS_EVENTS:
-        if structured is not None:
-            predicted_segments_original, segment_errors = _map_segments_to_original(
-                structured,
-                prepared_sample,
-            )
-            structuring_errors.extend(segment_errors)
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            structured if predicted_segments_original is not None else None,
+            structured,
             judge_client,
-            predicted_segments_original=predicted_segments_original,
         )
         component_pass["judge_pass"] = judge_pass
         task_pass = judge_pass
     elif prepared_sample.task_name == TASK_CONTINUOUS_ACTIONS:
-        if structured is not None:
-            predicted_segments_original, segment_errors = _map_segments_to_original(
-                structured,
-                prepared_sample,
-            )
-            structuring_errors.extend(segment_errors)
         judge_decision, judge_pass = _judge_textual_task(
             prepared_sample.task_name,
             prepared_sample,
-            structured if predicted_segments_original is not None else None,
+            structured,
             judge_client,
-            predicted_segments_original=predicted_segments_original,
         )
         component_pass["judge_pass"] = judge_pass
         if oracle_upstream:
@@ -389,19 +328,16 @@ def evaluate_sample(
             warnings.extend(tracking_warnings)
             task_pass = int(judge_pass and component_pass["tracking_pass"])
     elif prepared_sample.task_name == TASK_STG:
-        predicted_original_window = None
+        predicted_sampled_window = None
         if structured is not None:
-            predicted_original_window, window_errors = _map_window_to_original(
-                structured,
-                prepared_sample,
-            )
+            predicted_sampled_window, window_errors = _sampled_window_for_metric(structured)
             structuring_errors.extend(window_errors)
-        if predicted_original_window is None:
+        if predicted_sampled_window is None:
             tiou = 0.0
         else:
             tiou = temporal_iou(
-                predicted_original_window,
-                prepared_sample.reference_payload["time_window_original"],
+                predicted_sampled_window,
+                prepared_sample.reference_payload["time_window_sampled"],
             )
         metrics["tiou"] = tiou
         component_pass["tiou_pass"] = int(tiou >= TIOU_THRESHOLD)
@@ -423,7 +359,6 @@ def evaluate_sample(
         prepared_sample.task_name,
         prepared_sample.reference_payload,
         structured,
-        predicted_segments_original,
     )
 
     return EvaluationRecord(

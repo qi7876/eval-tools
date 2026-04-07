@@ -104,8 +104,8 @@ def test_render_judge_prompt_for_actions_focuses_on_actions_and_temporal_alignme
         load_judge_prompt_pack(JUDGE_PROMPT_ROOT),
         task_name="Continuous_Actions_Caption",
         question_text="Describe the target athlete's actions over time.",
-        reference_payload={"reference_segments": [{"start_frame": 0, "end_frame": 10, "text": "runs"}]},
-        prediction_payload={"prediction_segments": [{"start_frame": 0, "end_frame": 10, "text": "runs"}]},
+        reference_payload={"reference_segments": [{"start_sampled": 0, "end_sampled": 10, "text": "runs"}]},
+        prediction_payload={"prediction_segments": [{"start_sampled": 0, "end_sampled": 10, "text": "runs"}]},
     )
 
     assert "action descriptions over time" in prompt_text
@@ -115,9 +115,11 @@ def test_render_judge_prompt_for_actions_focuses_on_actions_and_temporal_alignme
     assert "Do not require exact interval boundaries" in prompt_text
     assert '"reference_segments"' in prompt_text
     assert '"prediction_segments"' in prompt_text
-    assert '"start_frame": 0' in prompt_text
-    assert '"end_frame": 10' in prompt_text
+    assert '"start_sampled": 0' in prompt_text
+    assert '"end_sampled": 10' in prompt_text
     assert '"text": "..."' in prompt_text
+    assert "sampled input sequence" in prompt_text
+    assert "Do not clip, fix, or reinterpret sampled indices" in prompt_text
     assert "tracking" not in prompt_text.lower()
 
 
@@ -126,8 +128,8 @@ def test_render_judge_prompt_for_events_allows_equivalent_segmentation():
         load_judge_prompt_pack(JUDGE_PROMPT_ROOT),
         task_name="Continuous_Events_Caption",
         question_text="Describe the key events over time.",
-        reference_payload={"reference_segments": [{"start_frame": 0, "end_frame": 10, "text": "a score happens"}]},
-        prediction_payload={"prediction_segments": [{"start_frame": 0, "end_frame": 8, "text": "a score is made"}]},
+        reference_payload={"reference_segments": [{"start_sampled": 0, "end_sampled": 10, "text": "a score happens"}]},
+        prediction_payload={"prediction_segments": [{"start_sampled": 0, "end_sampled": 8, "text": "a score is made"}]},
     )
 
     assert "event descriptions over time" in prompt_text
@@ -136,9 +138,11 @@ def test_render_judge_prompt_for_events_allows_equivalent_segmentation():
     assert "rough temporal correspondence" in prompt_text
     assert '"reference_segments"' in prompt_text
     assert '"prediction_segments"' in prompt_text
-    assert '"start_frame": 0' in prompt_text
-    assert '"end_frame": 10' in prompt_text
+    assert '"start_sampled": 0' in prompt_text
+    assert '"end_sampled": 10' in prompt_text
     assert '"text": "..."' in prompt_text
+    assert "sampled input sequence" in prompt_text
+    assert "Do not clip, fix, or reinterpret sampled indices" in prompt_text
 
 
 def test_render_judge_prompt_for_score_prediction_uses_general_game_answer_wording():

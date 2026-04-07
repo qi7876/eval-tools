@@ -198,7 +198,6 @@ def _coerce_labeled_objects(
 
 def _coerce_segments(
     value: Any,
-    num_sampled_frames: int,
     errors: list[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(value, list):
@@ -216,12 +215,6 @@ def _coerce_segments(
             continue
         start = int(segment["start_sampled"])
         end = int(segment["end_sampled"])
-        if start < 0 or end < 0 or start >= num_sampled_frames or end >= num_sampled_frames:
-            errors.append(f"segments[{index}] index out of range: {start}-{end}")
-            continue
-        if start > end:
-            errors.append(f"segments[{index}] start > end: {start}-{end}")
-            continue
         segments.append(
             {
                 "start_sampled": start,
@@ -234,7 +227,6 @@ def _coerce_segments(
 
 def _coerce_tracking(
     value: Any,
-    num_sampled_frames: int,
     errors: list[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(value, list):
@@ -249,9 +241,6 @@ def _coerce_tracking(
             errors.append(f"tracking[{index}] must contain frame_sampled and bbox_mot")
             continue
         frame_sampled = int(row["frame_sampled"])
-        if frame_sampled < 0 or frame_sampled >= num_sampled_frames:
-            errors.append(f"tracking[{index}] frame_sampled out of range: {frame_sampled}")
-            continue
         bbox_mot = _coerce_normalized_mot_box(
             row["bbox_mot"],
             f"tracking[{index}].bbox_mot",
@@ -270,7 +259,6 @@ def _coerce_tracking(
 
 def _coerce_time_window(
     value: Any,
-    num_sampled_frames: int,
     errors: list[str],
 ) -> list[int]:
     if not isinstance(value, list):
@@ -283,12 +271,6 @@ def _coerce_time_window(
         return []
     start = int(value[0])
     end = int(value[1])
-    if start < 0 or end < 0 or start >= num_sampled_frames or end >= num_sampled_frames:
-        errors.append(f"time_window_sampled out of range: {start}-{end}")
-        return []
-    if start > end:
-        errors.append(f"time_window_sampled start > end: {start}-{end}")
-        return []
     return [start, end]
 
 
@@ -302,7 +284,6 @@ def validate_structured_prediction(
 ) -> StructuredPredictionResult:
     errors: list[str] = []
     warnings: list[str] = []
-    num_sampled_frames = len(prepared_sample.sampled_frames_original)
     task_name = prepared_sample.task_name
 
     if task_name in TEXT_ONLY_TASKS:
@@ -353,7 +334,6 @@ def validate_structured_prediction(
         validated = {
             "segments": _coerce_segments(
                 structured_prediction.get("segments"),
-                num_sampled_frames,
                 errors,
             )
         }
@@ -371,7 +351,6 @@ def validate_structured_prediction(
             validated = {
                 "segments": _coerce_segments(
                     structured_prediction.get("segments"),
-                    num_sampled_frames,
                     errors,
                 )
             }
@@ -386,12 +365,10 @@ def validate_structured_prediction(
         validated = {
             "segments": _coerce_segments(
                 structured_prediction.get("segments"),
-                num_sampled_frames,
                 errors,
             ),
             "tracking": _coerce_tracking(
                 structured_prediction.get("tracking"),
-                num_sampled_frames,
                 errors,
             ),
         }
@@ -409,7 +386,6 @@ def validate_structured_prediction(
             validated = {
                 "time_window_sampled": _coerce_time_window(
                     structured_prediction.get("time_window_sampled"),
-                    num_sampled_frames,
                     errors,
                 ),
             }
@@ -424,12 +400,10 @@ def validate_structured_prediction(
         validated = {
             "time_window_sampled": _coerce_time_window(
                 structured_prediction.get("time_window_sampled"),
-                num_sampled_frames,
                 errors,
             ),
             "tracking": _coerce_tracking(
                 structured_prediction.get("tracking"),
-                num_sampled_frames,
                 errors,
             ),
         }

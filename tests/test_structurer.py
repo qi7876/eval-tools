@@ -407,6 +407,71 @@ def test_normal_structurer_for_stg_requires_tracking():
         )
 
 
+def test_normal_structurer_for_events_accepts_out_of_range_segments():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    result = service.structure(
+        _sample(
+            task_name="Continuous_Events_Caption",
+            question_text="Describe the events over time.",
+        ),
+        '{"segments": [{"start_sampled": 48, "end_sampled": 73, "text": "player shoots"}]}',
+    )
+
+    assert result.errors == []
+    assert result.structured_prediction == {
+        "segments": [{"start_sampled": 48, "end_sampled": 73, "text": "player shoots"}]
+    }
+
+
+def test_normal_structurer_for_actions_accepts_out_of_range_segment_and_tracking_indices():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    result = service.structure(
+        _sample(
+            task_name="Continuous_Actions_Caption",
+            question_text="Describe the athlete actions over time.",
+        ),
+        '{"segments": [{"start_sampled": 48, "end_sampled": 73, "text": "player runs"}], "tracking": [{"frame_sampled": 73, "bbox_mot": [1, 2, 3, 4]}]}',
+    )
+
+    assert result.errors == []
+    assert result.structured_prediction == {
+        "segments": [{"start_sampled": 48, "end_sampled": 73, "text": "player runs"}],
+        "tracking": [{"frame_sampled": 73, "bbox_mot": [1.0, 2.0, 3.0, 4.0]}],
+    }
+
+
+def test_normal_structurer_for_stg_accepts_out_of_range_window_and_tracking_indices():
+    service = StructurerService(
+        backend=StaticParseBackend(),
+        prompt_pack=load_structurer_prompt_pack(PROMPT_ROOT),
+        invalid_json_retries=0,
+    )
+
+    result = service.structure(
+        _sample(
+            task_name="Spatial_Temporal_Grounding",
+            question_text="Ground the action.",
+        ),
+        '{"time_window_sampled": [48, 73], "tracking": [{"frame_sampled": 73, "bbox_mot": [1, 2, 3, 4]}]}',
+    )
+
+    assert result.errors == []
+    assert result.structured_prediction == {
+        "time_window_sampled": [48, 73],
+        "tracking": [{"frame_sampled": 73, "bbox_mot": [1.0, 2.0, 3.0, 4.0]}],
+    }
+
+
 def test_oracle_structurer_for_actions_accepts_segments_only():
     service = StructurerService(
         backend=StaticParseBackend(),
