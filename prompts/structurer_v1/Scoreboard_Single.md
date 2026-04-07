@@ -19,5 +19,5 @@ Raw model output:
 Return JSON only. Use this schema exactly:
 {
   "text": "",
-  "bbox": []
+  "bbox": [-1, -1, -1, -1]
 }

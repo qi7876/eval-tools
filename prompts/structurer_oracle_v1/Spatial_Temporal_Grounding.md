@@ -9,11 +9,12 @@ Extraction rules:
 - If the raw model output contains reasoning plus a final structured answer, extract the final answer.
 - If multiple candidate windows appear, prefer the last one presented as the final answer.
 - Do not infer a time window that is not explicitly given.
+- `time_window_sampled` must be either an empty list or a two-value list `[start_sampled, end_sampled]`.
 
 Raw model output:
 {{raw_output}}
 
 Return JSON only. Use this schema exactly:
 {
-  "time_window_sampled": []
+  "time_window_sampled": [0, 4]
 }

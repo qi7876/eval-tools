@@ -10,6 +10,8 @@ Extraction rules:
 - If the raw model output contains reasoning plus a final structured answer, extract the final answer.
 - If multiple candidate windows or tracking results appear, prefer the last ones presented as the final answer.
 - Do not infer a time window or boxes that are not explicitly given.
+- `time_window_sampled` must be either an empty list or a two-value list `[start_sampled, end_sampled]`.
+- Each tracking row must contain `frame_sampled` and `bbox_mot`.
 - `bbox_mot` must be formatted as normalized_1000 `[left, top, width, height]`.
 - In this coordinate system, `(0, 0)` is the top-left corner and `(1000, 1000)` is the bottom-right corner.
 
@@ -18,6 +20,11 @@ Raw model output:
 
 Return JSON only. Use this schema exactly:
 {
-  "time_window_sampled": [],
-  "tracking": []
+  "time_window_sampled": [0, 4],
+  "tracking": [
+    {
+      "frame_sampled": 0,
+      "bbox_mot": [0, 0, 100, 100]
+    }
+  ]
 }

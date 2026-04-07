@@ -113,6 +113,11 @@ def test_render_judge_prompt_for_actions_focuses_on_actions_and_temporal_alignme
     assert "judging reference, not an exact segment template" in prompt_text
     assert "different split/merge of segments" in prompt_text
     assert "Do not require exact interval boundaries" in prompt_text
+    assert '"reference_segments"' in prompt_text
+    assert '"prediction_segments"' in prompt_text
+    assert '"start_frame": 0' in prompt_text
+    assert '"end_frame": 10' in prompt_text
+    assert '"text": "..."' in prompt_text
     assert "tracking" not in prompt_text.lower()
 
 
@@ -129,6 +134,11 @@ def test_render_judge_prompt_for_events_allows_equivalent_segmentation():
     assert "judging reference, not an exact segment template" in prompt_text
     assert "different split/merge of segments" in prompt_text
     assert "rough temporal correspondence" in prompt_text
+    assert '"reference_segments"' in prompt_text
+    assert '"prediction_segments"' in prompt_text
+    assert '"start_frame": 0' in prompt_text
+    assert '"end_frame": 10' in prompt_text
+    assert '"text": "..."' in prompt_text
 
 
 def test_render_judge_prompt_for_score_prediction_uses_general_game_answer_wording():

@@ -17,6 +17,7 @@ from omnichain_eval.template_pack import TaskTemplate
 
 PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_v1"
 ORACLE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "structurer_oracle_v1"
+ALL_PROMPTS_ROOT = Path(__file__).resolve().parent.parent / "prompts"
 
 
 def _sample(
@@ -161,6 +162,77 @@ def test_rendered_structurer_prompt_for_actions_includes_tracking_rules():
     assert "`bbox_mot` must be formatted as normalized_1000 `[left, top, width, height]`." in rendered.prompt_text
     assert "(1000, 1000)" in rendered.prompt_text
     assert "Question:" not in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_events_includes_full_segment_schema():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Continuous_Events_Caption",
+            question_text="Describe the key events over time.",
+        ),
+        "frames 0-1: a player shoots",
+    )
+
+    assert '\"start_sampled\": 0' in rendered.prompt_text
+    assert '\"end_sampled\": 3' in rendered.prompt_text
+    assert '\"text\": \"\"' in rendered.prompt_text
+    assert "Each segment must contain `start_sampled`, `end_sampled`, and `text`." in rendered.prompt_text
+
+
+def test_rendered_structurer_prompt_for_stg_includes_full_tracking_schema():
+    prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Spatial_Temporal_Grounding",
+            question_text="Find when the described action happens.",
+        ),
+        "window [0,2], frame 1 bbox [1,2,3,4]",
+    )
+
+    assert '\"time_window_sampled\": [0, 4]' in rendered.prompt_text
+    assert '\"frame_sampled\": 0' in rendered.prompt_text
+    assert '\"bbox_mot\": [0, 0, 100, 100]' in rendered.prompt_text
+    assert "`time_window_sampled` must be either an empty list or a two-value list `[start_sampled, end_sampled]`." in rendered.prompt_text
+    assert "Each tracking row must contain `frame_sampled` and `bbox_mot`." in rendered.prompt_text
+
+
+def test_rendered_oracle_structurer_prompt_for_actions_includes_full_segment_schema():
+    prompt_pack = load_oracle_structurer_prompt_pack(ORACLE_PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Continuous_Actions_Caption",
+            question_text="Describe the athlete actions over time.",
+        ),
+        "frames 0-1: runs",
+        oracle_upstream=True,
+    )
+
+    assert '\"start_sampled\": 0' in rendered.prompt_text
+    assert '\"end_sampled\": 3' in rendered.prompt_text
+    assert '\"text\": \"\"' in rendered.prompt_text
+    assert "Each segment must contain `start_sampled`, `end_sampled`, and `text`." in rendered.prompt_text
+    assert '\"tracking\"' not in rendered.prompt_text
+
+
+def test_rendered_oracle_structurer_prompt_for_stg_includes_explicit_window_schema():
+    prompt_pack = load_oracle_structurer_prompt_pack(ORACLE_PROMPT_ROOT)
+    rendered = render_structurer_prompt(
+        prompt_pack,
+        _sample(
+            task_name="Spatial_Temporal_Grounding",
+            question_text="Ground the action.",
+        ),
+        "frames 0-2",
+        oracle_upstream=True,
+    )
+
+    assert '\"time_window_sampled\": [0, 4]' in rendered.prompt_text
+    assert "`time_window_sampled` must be either an empty list or a two-value list `[start_sampled, end_sampled]`." in rendered.prompt_text
+    assert '\"tracking\"' not in rendered.prompt_text
 
 
 def test_rendered_structurer_prompt_for_text_task_is_pure_extractor():
@@ -446,3 +518,18 @@ def test_openai_structurer_forwards_extra_body(monkeypatch):
         "enable_thinking": False,
         "provider_hint": "structurer",
     }
+
+
+def test_prompt_sources_do_not_use_incomplete_empty_array_schemas():
+    bad_snippets = (
+        '"segments": []',
+        '"tracking": []',
+        '"time_window_sampled": []',
+        '"bbox": []',
+        '"objects": []',
+    )
+
+    for path in ALL_PROMPTS_ROOT.rglob("*.md"):
+        text = path.read_text(encoding="utf-8")
+        for snippet in bad_snippets:
+            assert snippet not in text, f"{path} still contains incomplete schema snippet: {snippet}"
