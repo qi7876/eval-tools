@@ -24,6 +24,10 @@ call the model through the framework and produce the normal runtime artifacts:
 
 The adapter must be minimal. The framework already owns prompt construction, chain-history construction, structuring, judging, scoring, artifact writing, and resume.
 
+Unless the repository owner explicitly says otherwise, OracleTrack compatibility is part of the default completion target for a real adapter handoff.
+That does not mean adding Oracle-specific branches inside the adapter.
+It means the adapter must work unchanged when the framework runs OracleTrack reruns through the normal `ModelInput` contract.
+
 ## Read These Files First
 
 - [src/omnichain_eval/adapters/base.py](/home/qi7876/dev/eval-tools/src/omnichain_eval/adapters/base.py)
@@ -75,6 +79,8 @@ Important detail:
 - The adapter can open frame files or the sampled video directly from those absolute paths.
 - The current protocol has already decided which sampled frames or sampled video the model should see.
 - If a model needs a different native sampling rule, implement a `BaseProtocol` class and rebuild prepared data for that protocol instead of re-sampling inside the adapter.
+- During OracleTrack visual reruns, the framework may swap `sample.frame_files` and `sample.sampled_video_file` to prepared Oracle visual-overlay media for the upstream sample.
+- The adapter must consume that swapped media transparently, without any Oracle-specific branch.
 
 ### What the framework already does
 
@@ -192,9 +198,15 @@ The last user message already includes task-specific instructions and the requir
 
 For downstream chain samples, forward the full history into the model. The adapter must not collapse the request to just the downstream question.
 
-### 5. Ignore OracleTrack implementation details
+### 5. OracleTrack compatibility is required, but still framework-owned
 
-OracleTrack is framework-owned. The framework runs three Oracle variants, injects GT tracking into the upstream rerun prompt when needed, swaps in Oracle visual-overlay media when needed, and rebuilds downstream history from the full rendered upstream prompt plus the upstream raw answer. The adapter does not need any OracleTrack-specific branch; it should always just consume `sample.frame_files` / `sample.sampled_video_file` and `model_input.messages`.
+OracleTrack is framework-owned. The framework runs three Oracle variants, injects GT tracking into the upstream rerun prompt when needed, swaps in Oracle visual-overlay media when needed, and rebuilds downstream history from the full rendered upstream prompt plus the upstream raw answer.
+
+The adapter still does not need any OracleTrack-specific branch.
+It should always just consume `sample.frame_files` / `sample.sampled_video_file` and `model_input.messages`.
+
+However, OracleTrack-enabled `run-eval` is the default handoff target for a real adapter implementation.
+Do not treat OracleTrack as an optional later step unless the repository owner explicitly asks for a non-Oracle-only milestone.
 
 ## Strong Recommendations
 
@@ -321,6 +333,11 @@ Typical mapping:
 - `sample.sampled_video_fps` -> explicit timing metadata if the model API needs it
 - `model_input.messages_as_dicts()` -> chat input or flattened text prompt
 
+OracleTrack implication:
+
+- if the framework swaps the upstream sample to Oracle visual-overlay media, the adapter should keep working without code changes
+- if the framework injects GT tracking into the rendered Oracle prompt, the adapter should still just consume `model_input.messages`
+
 Do not read GT from:
 
 - `sample.reference_payload`
@@ -341,11 +358,13 @@ run_name = "your-model-main"
 model_name = "your-model"
 adapter = "omnichain_eval.adapters.your_model:YourModelAdapter"
 chain_manifest = "../../artifacts/chain_pairs.jsonl"
-enable_oracle_track = false
+enable_oracle_track = true
+oracle_prompt_root = "../../prompts/benchmark_oracle_v1"
 
 [structurer]
 backend = "openai"
 prompt_root = "../../prompts/structurer_v1"
+oracle_prompt_root = "../../prompts/structurer_oracle_v1"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "DASHSCOPE_API_KEY"
 model = "qwen3.5-397b-a17b"
@@ -369,6 +388,7 @@ enable_thinking = false
 ```
 
 If the model needs native sampling different from `main`, replace `protocol = "main"` with the same custom protocol spec you used during `prepare-data`, for example `your_package.protocols:YourNativeSamplingProtocol`.
+The prepared data used by this config must have been built with Oracle visual media enabled, for example via `configs/examples/prepare_main.toml` or an equivalent custom prepare-data config with `generate_oracle_visual_media = true`.
 
 The framework owns structurer and judge configuration. Do not try to push model runtime knobs into this TOML unless the repository explicitly decides to support that later.
 
@@ -378,8 +398,8 @@ Recommended execution order:
 
 1. `validate-data`
 2. `build-chain-manifest`
-3. `prepare-data`
-4. `run-eval` on a smoke subset if you have one, otherwise a normal small run
+3. `prepare-data` with Oracle visual media enabled
+4. `run-eval` with OracleTrack enabled on a smoke subset if you have one, otherwise a normal small run
 
 At minimum, confirm:
 
@@ -389,6 +409,8 @@ At minimum, confirm:
 - chain downstream calls receive 3 messages in order
 - `predictions.jsonl` is populated
 - `structured_predictions.jsonl` and `results.jsonl` continue updating after predictions
+- Oracle upstream reruns also execute through the same adapter class without adapter-side branching
+- Oracle visual upstream reruns work when the framework swaps in prepared overlay media
 - rerunning the same `run_name` resumes instead of recomputing finished samples
 
 ## Resume Behavior You Must Understand
@@ -424,6 +446,7 @@ Good test targets:
 - frame-path collection helper
 - lazy-load behavior
 - preservation of message order when flattening multi-turn history
+- preserving the framework-provided message and media inputs for OracleTrack reruns if you can unit-test that without real weights
 
 If real-model inference is too heavy for CI, do not force it into CI. Keep unit tests local to pure helpers and do manual smoke validation with the actual model.
 
@@ -446,8 +469,10 @@ The adapter is complete when all of the following are true:
 2. `run-eval` can call `predict()` on prepared samples without adapter-side prompt construction.
 3. Normal samples write to `predictions.jsonl` and continue through structuring and judging.
 4. Chain downstream samples write to `chain_predictions.jsonl` and preserve upstream rendered prompt plus upstream raw answer in history.
-5. Re-running the same `run_name` resumes from existing artifacts.
-6. The adapter returns only raw model text and leaves structuring/judging to the framework.
+5. OracleTrack-enabled `run-eval` works with the same adapter class and without adapter-side Oracle branches.
+6. Oracle upstream reruns consume the framework-provided prompt and media inputs unchanged, including Oracle visual-overlay media when present.
+7. Re-running the same `run_name` resumes from existing artifacts.
+8. The adapter returns only raw model text and leaves structuring/judging to the framework.
 
 ## If You Hit An Environment Blocker
 

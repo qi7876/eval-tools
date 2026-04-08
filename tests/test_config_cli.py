@@ -8,6 +8,9 @@ from omnichain_eval.config import load_prepare_data_config, load_run_eval_config
 from omnichain_eval.protocols import ALL_PROTOCOLS
 
 
+EXAMPLE_CONFIG_ROOT = Path(__file__).resolve().parent.parent / "configs" / "examples"
+
+
 def _write_protocol_module(tmp_path: Path) -> str:
     module_name = "custom_protocols_config"
     module_path = tmp_path / f"{module_name}.py"
@@ -204,6 +207,18 @@ prompt_root = "prompts/structurer_v1"
 
     with pytest.raises(ValueError, match=r"\[judge\]\.temperature must be a number"):
         load_run_eval_config(config_path)
+
+
+def test_example_run_eval_configs_enable_oracle_track_by_default():
+    for file_name in [
+        "run_eval_adapter.toml",
+        "run_eval_main.toml",
+        "run_eval_custom_protocol.toml",
+    ]:
+        config = load_run_eval_config(EXAMPLE_CONFIG_ROOT / file_name)
+        assert config.enable_oracle_track is True
+        assert config.oracle_prompt_root is not None
+        assert config.structurer.oracle_prompt_root is not None
 
 
 def test_load_run_eval_config_requires_adapter(tmp_path):

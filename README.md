@@ -498,7 +498,8 @@ The adapter class must be importable in the current Python environment.
 [run_eval].protocol must use the same built-in id or Python protocol spec that was used during `prepare-data`.
 `[run_eval].prompt_root` is required and must point to a prompt pack directory containing the 10 task Markdown templates.
 `[structurer].prompt_root` is also required and must point to the structurer prompt pack.
-If `[run_eval].enable_oracle_track = true`, then `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` are also required.
+For real adapter bring-up, OracleTrack should stay enabled by default unless you are explicitly doing a non-Oracle-only milestone.
+When `[run_eval].enable_oracle_track = true`, `[run_eval].oracle_prompt_root` and `[structurer].oracle_prompt_root` are also required.
 `[run_eval].oracle_prompt_root` must point to the Oracle prompt base directory containing `language/`, `visual/`, and `language_visual/`.
 `[structurer].oracle_prompt_root` must point to the Oracle upstream structurer prompt pack.
 
@@ -554,6 +555,7 @@ In practice, adapters read prompts from `model_input.messages` and choose media 
 - use `frame_files` for image-native models
 - use `sampled_video_file` for video-native models when it is present
 - use `sampled_video_fps` if the model API needs explicit timing metadata
+- during Oracle visual reruns, consume the framework-provided Oracle overlay media the same way, without adapter-side Oracle branching
 
 Important:
 
@@ -706,6 +708,9 @@ protocol = "main"
 artifacts_root = "artifacts/runs"
 prompt_root = "prompts/benchmark_v1"
 adapter = "my_package.my_adapter:MyVideoAdapter"
+chain_manifest = "artifacts/chain_pairs.jsonl"
+enable_oracle_track = true
+oracle_prompt_root = "prompts/benchmark_oracle_v1"
 
 [judge]
 backend = "openai"
@@ -723,6 +728,7 @@ enable_thinking = false
 [structurer]
 backend = "openai"
 prompt_root = "prompts/structurer_v1"
+oracle_prompt_root = "prompts/structurer_oracle_v1"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "DASHSCOPE_API_KEY"
 model = "qwen3.5-397b-a17b"
@@ -733,6 +739,8 @@ concurrency = 1
 [structurer.extra_body]
 enable_thinking = false
 ```
+
+This assumes prepared data was built with Oracle visual media enabled, for example via `configs/examples/prepare_main.toml`.
 
 ## Structurer Configuration
 
@@ -967,6 +975,7 @@ Each Oracle group reports:
 ## OracleTrack
 
 OracleTrack is framework-owned.
+For real adapter implementation and handoff, OracleTrack compatibility is the default target rather than an optional follow-up.
 
 Then run:
 
@@ -1067,7 +1076,7 @@ UV_CACHE_DIR=/tmp/uv-cache uv run omnichain-eval run-eval --config configs/examp
 7. Return the raw model answer as a string.
 8. Run `run-eval --config your_model.toml` on the same protocol you prepared.
 9. Set `[run_eval].chain_manifest` to get Experiment B metrics.
-10. If needed, set `[run_eval].enable_oracle_track = true` and let the framework run OracleTrack reruns.
+10. Keep `[run_eval].enable_oracle_track = true` by default and let the framework run OracleTrack reruns, unless you were explicitly asked to deliver a non-Oracle-only milestone.
 
 If you follow that flow, the model integration stays thin: all dataset parsing, frame preparation, prompt construction, chain accounting, structured extraction, scoring, and summary generation remain inside the framework.
 

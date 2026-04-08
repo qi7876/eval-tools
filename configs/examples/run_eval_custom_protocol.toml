@@ -7,8 +7,10 @@ run_name = "baseline-custom-protocol"
 model_name = "your-model-name"
 adapter = "your_package.adapters.video:YourVideoAdapter"
 chain_manifest = "../../artifacts/chain_pairs.jsonl"
-enable_oracle_track = false
-# oracle_prompt_root = "../../prompts/benchmark_oracle_v1"
+enable_oracle_track = true
+oracle_prompt_root = "../../prompts/benchmark_oracle_v1"
+# This example assumes prepared data was built with Oracle visual media enabled,
+# e.g. via configs/examples/prepare_custom_protocol.toml.
 
 [judge]
 backend = "openai"
@@ -26,7 +28,7 @@ enable_thinking = false
 [structurer]
 backend = "openai"
 prompt_root = "../../prompts/structurer_v1"
-# oracle_prompt_root = "../../prompts/structurer_oracle_v1"
+oracle_prompt_root = "../../prompts/structurer_oracle_v1"
 base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 api_key_env = "DASHSCOPE_API_KEY"
 model = "qwen3.5-397b-a17b"
