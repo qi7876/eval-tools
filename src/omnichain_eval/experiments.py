@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -84,6 +85,70 @@ def load_chain_pairs(path: Path) -> list[ChainPairRecord]:
     return [ChainPairRecord(**row) for row in read_jsonl(path)]
 
 
+def _positive_int_or_none(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        return None
+    return normalized if normalized > 0 else None
+
+
+def _resolve_bertscore_tokenizer_max_length(
+    tokenizer_max_length: Any,
+    model_max_position_embeddings: Any,
+) -> int | None:
+    normalized_tokenizer_max_length = _positive_int_or_none(tokenizer_max_length)
+    normalized_model_max_positions = _positive_int_or_none(model_max_position_embeddings)
+    if normalized_model_max_positions is None:
+        return normalized_tokenizer_max_length
+    if normalized_tokenizer_max_length is None:
+        return normalized_model_max_positions
+    return min(normalized_tokenizer_max_length, normalized_model_max_positions)
+
+
+def _clip_bertscore_tokenizer_max_length(scorer: Any) -> Any:
+    tokenizer = getattr(scorer, "_tokenizer", None)
+    model = getattr(scorer, "_model", None)
+    model_config = getattr(model, "config", None)
+    effective_max_length = _resolve_bertscore_tokenizer_max_length(
+        getattr(tokenizer, "model_max_length", None),
+        getattr(model_config, "max_position_embeddings", None),
+    )
+    if tokenizer is None or effective_max_length is None:
+        return scorer
+    tokenizer.model_max_length = effective_max_length
+    init_kwargs = getattr(tokenizer, "init_kwargs", None)
+    if isinstance(init_kwargs, dict):
+        init_kwargs["model_max_length"] = effective_max_length
+    if hasattr(tokenizer, "max_len"):
+        try:
+            tokenizer.max_len = effective_max_length
+        except (AttributeError, TypeError):
+            pass
+    return scorer
+
+
+@lru_cache(maxsize=1)
+def _get_bertscore_scorer() -> Any:
+    try:
+        from bert_score import BERTScorer
+    except ImportError as exc:  # pragma: no cover - optional dependency
+        raise RuntimeError(
+            "bert-score dependency is not available in the current environment."
+        ) from exc
+    return _clip_bertscore_tokenizer_max_length(
+        BERTScorer(
+            model_type=BERTSCORE_MODEL,
+            lang="en",
+            rescale_with_baseline=True,
+            idf=False,
+            use_fast_tokenizer=False,
+        )
+    )
+
+
 def compute_bertscore(records: list[EvaluationRecord]) -> None:
     eligible = [
         record
@@ -92,20 +157,10 @@ def compute_bertscore(records: list[EvaluationRecord]) -> None:
     ]
     if not eligible:
         return
-    try:
-        from bert_score import score
-    except ImportError as exc:  # pragma: no cover - optional dependency
-        raise RuntimeError(
-            "bert-score dependency is not available in the current environment."
-        ) from exc
-    _, _, f1_scores = score(
+    scorer = _get_bertscore_scorer()
+    _, _, f1_scores = scorer.score(
         cands=[record.bertscore_candidate for record in eligible],
         refs=[record.bertscore_reference for record in eligible],
-        model_type=BERTSCORE_MODEL,
-        lang="en",
-        rescale_with_baseline=True,
-        idf=False,
-        use_fast_tokenizer=False,
     )
     for record, score_value in zip(eligible, f1_scores.tolist(), strict=True):
         record.component_metrics["bertscore_f1"] = float(score_value)

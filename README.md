@@ -1013,6 +1013,7 @@ Notes:
 
 - BERTScore is supplementary only
 - it never changes pass/fail
+- the framework clamps the BERTScore tokenizer max length to the underlying model's `max_position_embeddings` when the tokenizer reports an oversized sentinel length
 
 ## Failure Behavior
 
