@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import contextmanager
 from dataclasses import replace
 from functools import lru_cache
+import importlib
 from pathlib import Path
 from typing import Any
+import warnings
 
 from .adapters.base import BaseModelAdapter
 from .constants import (
@@ -130,23 +133,76 @@ def _clip_bertscore_tokenizer_max_length(scorer: Any) -> Any:
     return scorer
 
 
-@lru_cache(maxsize=1)
-def _get_bertscore_scorer() -> Any:
+@contextmanager
+def _quiet_bertscore_model_load() -> Any:
+    try:
+        from transformers.utils import logging as hf_logging
+    except ImportError:  # pragma: no cover - transformers is a bert-score dependency
+        with warnings.catch_warnings():
+            yield
+        return
+    previous_verbosity = hf_logging.get_verbosity()
+    hf_logging.set_verbosity_error()
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message=r".*Some weights of .* were not used when initializing.*",
+                category=UserWarning,
+            )
+            yield
+    finally:
+        hf_logging.set_verbosity(previous_verbosity)
+
+
+def _preload_bertscore_baseline(scorer: Any) -> Any:
+    if not getattr(scorer, "rescale_with_baseline", False):
+        return scorer
+    if getattr(scorer, "_baseline_vals", None) is not None:
+        return scorer
+    baseline_path = Path(str(scorer.baseline_path))
+    if not baseline_path.is_file():
+        raise ValueError(
+            f"Baseline not Found for {scorer.model_type} on {scorer.lang} at {scorer.baseline_path}"
+        )
+    scorer_module = importlib.import_module("bert_score.scorer")
+    baseline_frame = scorer_module.pd.read_csv(baseline_path)
+    if getattr(scorer, "all_layers", False):
+        baseline_values = baseline_frame.to_numpy(copy=True)[:, 1:]
+        scorer._baseline_vals = scorer_module.torch.tensor(
+            baseline_values,
+            dtype=scorer_module.torch.float32,
+        ).unsqueeze(1)
+    else:
+        baseline_values = baseline_frame.iloc[scorer.num_layers].to_numpy(copy=True)[1:]
+        scorer._baseline_vals = scorer_module.torch.tensor(
+            baseline_values,
+            dtype=scorer_module.torch.float32,
+        )
+    return scorer
+
+
+def _build_bertscore_scorer() -> Any:
     try:
         from bert_score import BERTScorer
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
             "bert-score dependency is not available in the current environment."
         ) from exc
-    return _clip_bertscore_tokenizer_max_length(
-        BERTScorer(
+    with _quiet_bertscore_model_load():
+        scorer = BERTScorer(
             model_type=BERTSCORE_MODEL,
             lang="en",
             rescale_with_baseline=True,
             idf=False,
             use_fast_tokenizer=False,
         )
-    )
+    return _preload_bertscore_baseline(_clip_bertscore_tokenizer_max_length(scorer))
+
+
+@lru_cache(maxsize=1)
+def _get_bertscore_scorer() -> Any:
+    return _build_bertscore_scorer()
 
 
 def compute_bertscore(records: list[EvaluationRecord]) -> None:
