@@ -320,6 +320,50 @@ def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
     assert created["client"].chat.completions.calls == 2
 
 
+def test_openai_judge_logs_prompt_and_response_on_failure(monkeypatch, capsys):
+    responses = [
+        _completion(json.dumps({"wrong_key": 1})),
+        _completion(json.dumps({"still_wrong": 2})),
+    ]
+
+    class FakeCompletions:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def create(self, **_: object):
+            response = responses[self.calls]
+            self.calls += 1
+            return response
+
+    class FakeOpenAI:
+        def __init__(self, **_: object) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr("omnichain_eval.judge.OpenAI", FakeOpenAI)
+
+    judge_client = OpenAIJudgeClient(
+        base_url="http://judge.example/v1",
+        api_key="dummy",
+        prompt_root=JUDGE_PROMPT_ROOT,
+        invalid_json_retries=1,
+    )
+
+    with pytest.raises(JudgeResponseFormatExhaustedError, match="did not match schema"):
+        judge_client.judge(
+            task_name="Continuous_Events_Caption",
+            question_text="Describe the events.",
+            reference_payload={"reference_segments": [{"text": "A score."}]},
+            prediction_payload={"prediction_segments": [{"text": "A score."}]},
+        )
+
+    captured = capsys.readouterr()
+    assert "[Judge Debug] failure detected" in captured.err
+    assert "task_name=Continuous_Events_Caption" in captured.err
+    assert "did not match schema after 2 attempt(s)" in captured.err
+    assert "Describe the events." in captured.err
+    assert '{"still_wrong": 2}' in captured.err
+
+
 def test_openai_judge_forwards_extra_body(monkeypatch):
     captured: dict[str, object] = {}
 

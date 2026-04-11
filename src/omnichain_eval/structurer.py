@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -197,6 +198,31 @@ class StructurerService:
     oracle_prompt_pack: dict[str, StructurerPromptTemplate] | None = None
     invalid_json_retries: int = 0
 
+    def _emit_failure_debug_log(
+        self,
+        *,
+        sample: PreparedSample,
+        rendered_prompt: RenderedStructurerPrompt,
+        raw_response: str | None,
+        reason: str,
+    ) -> None:
+        print(
+            "\n".join(
+                [
+                    "[Structurer Debug] failure detected",
+                    f"[Structurer Debug] sample_id={sample.sample_id}",
+                    f"[Structurer Debug] task_name={sample.task_name}",
+                    f"[Structurer Debug] reason={reason}",
+                    "[Structurer Debug] prompt:",
+                    rendered_prompt.prompt_text,
+                    "[Structurer Debug] response:",
+                    raw_response if raw_response is not None else "<no response>",
+                ]
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
     def _parse_payload(self, raw_response: str) -> dict[str, Any]:
         try:
             payload = extract_json_object(raw_response)
@@ -232,11 +258,21 @@ class StructurerService:
         last_raw_response: str | None = None
         last_error_reason = "structurer response format was invalid"
         for attempt_index in range(max_attempts):
-            for raw_response in self.backend.complete(
-                sample=sample,
-                raw_output=raw_output,
-                rendered_prompt=rendered_prompt,
-            ):
+            try:
+                responses = self.backend.complete(
+                    sample=sample,
+                    raw_output=raw_output,
+                    rendered_prompt=rendered_prompt,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._emit_failure_debug_log(
+                    sample=sample,
+                    rendered_prompt=rendered_prompt,
+                    raw_response=None,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                raise
+            for raw_response in responses:
                 last_raw_response = raw_response
                 try:
                     payload = self._parse_payload(raw_response)
@@ -255,8 +291,21 @@ class StructurerService:
                     continue
                 return validation
             if attempt_index + 1 >= max_attempts:
+                failure_reason = f"{last_error_reason} after {max_attempts} attempt(s)"
+                self._emit_failure_debug_log(
+                    sample=sample,
+                    rendered_prompt=rendered_prompt,
+                    raw_response=last_raw_response,
+                    reason=failure_reason,
+                )
                 raise StructurerResponseFormatExhaustedError(
-                    f"{last_error_reason} after {max_attempts} attempt(s)",
+                    failure_reason,
                     last_raw_response,
                 )
+        self._emit_failure_debug_log(
+            sample=sample,
+            rendered_prompt=rendered_prompt,
+            raw_response=last_raw_response,
+            reason=last_error_reason,
+        )
         raise StructurerResponseFormatExhaustedError(last_error_reason, last_raw_response)

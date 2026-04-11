@@ -126,6 +126,30 @@ def test_structurer_raises_after_exhausting_format_retries():
     assert backend.calls == 2
 
 
+def test_structurer_logs_prompt_and_response_on_failure(capsys):
+    backend = SequenceBackend(
+        [
+            '{"wrong_key": "value"}',
+            '{"still_wrong": "value"}',
+        ]
+    )
+    service = StructurerService(
+        backend=backend,
+        prompt_pack=_prompt_pack(),
+        invalid_json_retries=1,
+    )
+
+    with pytest.raises(StructurerResponseFormatExhaustedError, match="missing text field"):
+        service.structure(_sample(), '{"text": "Team A is leading."}')
+
+    captured = capsys.readouterr()
+    assert "[Structurer Debug] failure detected" in captured.err
+    assert "sample_id=video/sample#1" in captured.err
+    assert "missing text field after 2 attempt(s)" in captured.err
+    assert '{"text": "Team A is leading."}' in captured.err
+    assert '{"still_wrong": "value"}' in captured.err
+
+
 def test_rendered_structurer_prompt_for_scoreboard_single_includes_bbox_rules():
     prompt_pack = load_structurer_prompt_pack(PROMPT_ROOT)
     rendered = render_structurer_prompt(

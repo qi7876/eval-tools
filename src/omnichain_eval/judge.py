@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -261,6 +262,30 @@ class OpenAIJudgeClient(JudgeClient):
                 responses.append(message or "")
         return responses or [""]
 
+    def _emit_failure_debug_log(
+        self,
+        *,
+        task_name: str,
+        prompt_text: str,
+        raw_response: str | None,
+        reason: str,
+    ) -> None:
+        print(
+            "\n".join(
+                [
+                    "[Judge Debug] failure detected",
+                    f"[Judge Debug] task_name={task_name}",
+                    f"[Judge Debug] reason={reason}",
+                    "[Judge Debug] prompt:",
+                    prompt_text,
+                    "[Judge Debug] response:",
+                    raw_response if raw_response is not None else "<no response>",
+                ]
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
     def judge(
         self,
         task_name: str,
@@ -279,12 +304,21 @@ class OpenAIJudgeClient(JudgeClient):
         last_raw_response: str | None = None
         last_error_reason = "judge response format was invalid"
         for attempt_index in range(max_attempts):
-            completion = self.client.chat.completions.create(
-                model=self.model,
-                messages=[{"role": "user", "content": prompt_text}],
-                temperature=self.temperature,
-                extra_body=self.extra_body or None,
-            )
+            try:
+                completion = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "user", "content": prompt_text}],
+                    temperature=self.temperature,
+                    extra_body=self.extra_body or None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._emit_failure_debug_log(
+                    task_name=task_name,
+                    prompt_text=prompt_text,
+                    raw_response=None,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                raise
             for raw_response in self._response_texts(completion):
                 last_raw_response = raw_response
                 try:
@@ -294,8 +328,21 @@ class OpenAIJudgeClient(JudgeClient):
                     continue
                 return decision
             if attempt_index + 1 >= max_attempts:
+                failure_reason = f"{last_error_reason} after {max_attempts} attempt(s)"
+                self._emit_failure_debug_log(
+                    task_name=task_name,
+                    prompt_text=prompt_text,
+                    raw_response=last_raw_response,
+                    reason=failure_reason,
+                )
                 raise JudgeResponseFormatExhaustedError(
-                    f"{last_error_reason} after {max_attempts} attempt(s)",
+                    failure_reason,
                     last_raw_response,
                 )
+        self._emit_failure_debug_log(
+            task_name=task_name,
+            prompt_text=prompt_text,
+            raw_response=last_raw_response,
+            reason=last_error_reason,
+        )
         raise JudgeResponseFormatExhaustedError(last_error_reason, last_raw_response)
