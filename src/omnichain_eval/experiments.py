@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from contextlib import contextmanager
 from dataclasses import replace
 from functools import lru_cache
 import importlib
 from pathlib import Path
 from typing import Any
-import warnings
+from contextlib import contextmanager
 
 from .adapters.base import BaseModelAdapter
 from .constants import (
@@ -133,26 +132,103 @@ def _clip_bertscore_tokenizer_max_length(scorer: Any) -> Any:
     return scorer
 
 
-@contextmanager
-def _quiet_bertscore_model_load() -> Any:
-    try:
-        from transformers.utils import logging as hf_logging
-    except ImportError:  # pragma: no cover - transformers is a bert-score dependency
-        with warnings.catch_warnings():
-            yield
-        return
-    previous_verbosity = hf_logging.get_verbosity()
-    hf_logging.set_verbosity_error()
-    try:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message=r".*Some weights of .* were not used when initializing.*",
-                category=UserWarning,
+def _finalize_bertscore_model_layers(
+    model: Any,
+    model_type: str,
+    num_layers: int,
+    all_layers: bool | None,
+) -> Any:
+    model.eval()
+    if hasattr(model, "decoder") and hasattr(model, "encoder"):
+        model = model.encoder
+    if not all_layers:
+        if hasattr(model, "n_layers"):
+            assert (
+                0 <= num_layers <= model.n_layers
+            ), f"Invalid num_layers: num_layers should be between 0 and {model.n_layers} for {model_type}"
+            model.n_layers = num_layers
+        elif hasattr(model, "layer"):
+            assert (
+                0 <= num_layers <= len(model.layer)
+            ), f"Invalid num_layers: num_layers should be between 0 and {len(model.layer)} for {model_type}"
+            model.layer = model.layer.__class__([layer for layer in model.layer[:num_layers]])
+        elif hasattr(model, "encoder"):
+            if hasattr(model.encoder, "albert_layer_groups"):
+                assert (
+                    0 <= num_layers <= model.encoder.config.num_hidden_layers
+                ), f"Invalid num_layers: num_layers should be between 0 and {model.encoder.config.num_hidden_layers} for {model_type}"
+                model.encoder.config.num_hidden_layers = num_layers
+            elif hasattr(model.encoder, "block"):
+                assert (
+                    0 <= num_layers <= len(model.encoder.block)
+                ), f"Invalid num_layers: num_layers should be between 0 and {len(model.encoder.block)} for {model_type}"
+                model.encoder.block = model.encoder.block.__class__(
+                    [layer for layer in model.encoder.block[:num_layers]]
+                )
+            else:
+                assert (
+                    0 <= num_layers <= len(model.encoder.layer)
+                ), f"Invalid num_layers: num_layers should be between 0 and {len(model.encoder.layer)} for {model_type}"
+                model.encoder.layer = model.encoder.layer.__class__(
+                    [layer for layer in model.encoder.layer[:num_layers]]
+                )
+        elif hasattr(model, "transformer"):
+            assert (
+                0 <= num_layers <= len(model.transformer.layer)
+            ), f"Invalid num_layers: num_layers should be between 0 and {len(model.transformer.layer)} for {model_type}"
+            model.transformer.layer = model.transformer.layer.__class__(
+                [layer for layer in model.transformer.layer[:num_layers]]
             )
-            yield
+        elif hasattr(model, "layers"):
+            assert (
+                0 <= num_layers <= len(model.layers)
+            ), f"Invalid num_layers: num_layers should be between 0 and {len(model.layers)} for {model_type}"
+            model.layers = model.layers.__class__([layer for layer in model.layers[:num_layers]])
+        else:
+            raise ValueError("Not supported")
+    else:
+        if hasattr(model, "output_hidden_states"):
+            model.output_hidden_states = True
+        elif hasattr(model, "encoder"):
+            model.encoder.output_hidden_states = True
+        elif hasattr(model, "transformer"):
+            model.transformer.output_hidden_states = True
+    return model
+
+
+def _load_bertscore_model_from_sequence_classifier(
+    model_type: str,
+    num_layers: int,
+    all_layers: bool | None,
+) -> Any:
+    from transformers import AutoModelForSequenceClassification
+
+    classifier_model = AutoModelForSequenceClassification.from_pretrained(model_type)
+    base_model_prefix = getattr(classifier_model, "base_model_prefix", None)
+    if not base_model_prefix or not hasattr(classifier_model, base_model_prefix):
+        raise ValueError(f"{model_type} does not expose a base model via base_model_prefix")
+    backbone = getattr(classifier_model, base_model_prefix)
+    return _finalize_bertscore_model_layers(backbone, model_type, num_layers, all_layers)
+
+
+@contextmanager
+def _patch_bertscore_model_loader(scorer_module: Any) -> Any:
+    original_get_model = scorer_module.get_model
+
+    def patched_get_model(model_type: str, num_layers: int, all_layers: bool | None = None) -> Any:
+        if model_type == BERTSCORE_MODEL:
+            return _load_bertscore_model_from_sequence_classifier(
+                model_type,
+                num_layers,
+                all_layers,
+            )
+        return original_get_model(model_type, num_layers, all_layers)
+
+    scorer_module.get_model = patched_get_model
+    try:
+        yield
     finally:
-        hf_logging.set_verbosity(previous_verbosity)
+        scorer_module.get_model = original_get_model
 
 
 def _preload_bertscore_baseline(scorer: Any) -> Any:
@@ -184,13 +260,13 @@ def _preload_bertscore_baseline(scorer: Any) -> Any:
 
 def _build_bertscore_scorer() -> Any:
     try:
-        from bert_score import BERTScorer
+        scorer_module = importlib.import_module("bert_score.scorer")
     except ImportError as exc:  # pragma: no cover - optional dependency
         raise RuntimeError(
             "bert-score dependency is not available in the current environment."
         ) from exc
-    with _quiet_bertscore_model_load():
-        scorer = BERTScorer(
+    with _patch_bertscore_model_loader(scorer_module):
+        scorer = scorer_module.BERTScorer(
             model_type=BERTSCORE_MODEL,
             lang="en",
             rescale_with_baseline=True,

@@ -1,6 +1,4 @@
-import sys
 from types import SimpleNamespace
-import warnings
 
 from omnichain_eval import experiments
 from omnichain_eval.schema import EvaluationRecord
@@ -41,26 +39,32 @@ def test_resolve_bertscore_tokenizer_max_length_clips_huge_tokenizer_limit():
     assert experiments._resolve_bertscore_tokenizer_max_length(None, None) is None
 
 
-def test_quiet_bertscore_model_load_restores_transformers_verbosity(monkeypatch):
-    from transformers.utils import logging as hf_logging
+def test_patch_bertscore_model_loader_uses_sequence_classifier_only_for_target_model(
+    monkeypatch,
+):
+    sentinel = object()
+    original_calls: list[tuple[str, int, bool | None]] = []
+    scorer_module = SimpleNamespace(
+        get_model=lambda model_type, num_layers, all_layers=None: (
+            original_calls.append((model_type, num_layers, all_layers)) or "original"
+        )
+    )
+    monkeypatch.setattr(
+        experiments,
+        "_load_bertscore_model_from_sequence_classifier",
+        lambda model_type, num_layers, all_layers: sentinel,
+    )
 
-    calls: list[object] = []
-    monkeypatch.setattr(hf_logging, "get_verbosity", lambda: 30)
-    monkeypatch.setattr(hf_logging, "set_verbosity_error", lambda: calls.append("error"))
-    monkeypatch.setattr(hf_logging, "set_verbosity", lambda value: calls.append(("restore", value)))
+    with experiments._patch_bertscore_model_loader(scorer_module):
+        assert scorer_module.get_model(experiments.BERTSCORE_MODEL, 18, False) is sentinel
+        assert scorer_module.get_model("other-model", 6, True) == "original"
 
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        with experiments._quiet_bertscore_model_load():
-            calls.append("inside")
-            warnings.warn(
-                "Some weights of FakeModel were not used when initializing FakeEncoder",
-                UserWarning,
-            )
-            warnings.warn("keep this warning", UserWarning)
-
-    assert calls == ["error", "inside", ("restore", 30)]
-    assert [str(item.message) for item in caught] == ["keep this warning"]
+    assert original_calls == [("other-model", 6, True)]
+    assert scorer_module.get_model("outside-context", 3, None) == "original"
+    assert original_calls == [
+        ("other-model", 6, True),
+        ("outside-context", 3, None),
+    ]
 
 
 def test_preload_bertscore_baseline_uses_writable_copy(monkeypatch, tmp_path):
@@ -149,10 +153,12 @@ def test_get_bertscore_scorer_clips_tokenizer_model_max_length(monkeypatch):
             self._baseline_vals = None
 
     experiments._get_bertscore_scorer.cache_clear()
-    monkeypatch.setitem(
-        sys.modules,
-        "bert_score",
-        SimpleNamespace(BERTScorer=FakeBERTScorer),
+    scorer_module = SimpleNamespace(BERTScorer=FakeBERTScorer, get_model=lambda *args, **kwargs: None)
+    monkeypatch.setattr(experiments.importlib, "import_module", lambda name: scorer_module)
+    monkeypatch.setattr(
+        experiments,
+        "_load_bertscore_model_from_sequence_classifier",
+        lambda model_type, num_layers, all_layers: object(),
     )
 
     scorer = experiments._get_bertscore_scorer()
