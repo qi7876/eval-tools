@@ -63,15 +63,6 @@ def temporal_iou(pred_interval: list[int], gt_interval: list[int]) -> float:
     return intersection / union
 
 
-def _is_scoreboard_bbox_sentinel(box: Any) -> bool:
-    if not isinstance(box, list) or len(box) != 4:
-        return False
-    try:
-        return all(float(value) == -1.0 for value in box)
-    except (TypeError, ValueError):
-        return False
-
-
 def _judge_required(task_name: str) -> bool:
     return task_name in JUDGE_REQUIRED_TASKS
 
@@ -106,15 +97,13 @@ def _judge_prediction_payload(
 
 def _sampled_window_for_metric(
     structured_prediction: dict[str, Any],
-) -> tuple[list[int] | None, list[str]]:
+) -> list[int] | None:
     window = structured_prediction.get("time_window_sampled")
     if not isinstance(window, list) or len(window) != 2:
-        return None, ["missing time_window_sampled"]
+        return None
     start = int(window[0])
     end = int(window[1])
-    if start > end:
-        return None, [f"time_window_sampled start > end: {start}-{end}"]
-    return [start, end], []
+    return [start, end]
 
 
 def _collapse_tracking(
@@ -171,7 +160,12 @@ def _evaluate_object_spatial(
     predicted_by_label = {
         str(row["label"]).strip(): [float(value) for value in row["bbox"]]
         for row in predicted_objects
-        if isinstance(row, dict) and "label" in row and "bbox" in row
+        if (
+            isinstance(row, dict)
+            and "label" in row
+            and isinstance(row.get("bbox"), list)
+            and len(row["bbox"]) == 4
+        )
     }
     object_ious: dict[str, float] = {}
     object_passes: dict[str, int] = {}
@@ -259,9 +253,7 @@ def evaluate_sample(
 
     if prepared_sample.task_name == TASK_SCOREBOARD_SINGLE:
         predicted_bbox = structured.get("bbox") if structured else None
-        if _is_scoreboard_bbox_sentinel(predicted_bbox):
-            iou = 0.0
-        elif structured and isinstance(predicted_bbox, list) and len(predicted_bbox) == 4:
+        if structured and isinstance(predicted_bbox, list) and len(predicted_bbox) == 4:
             iou = bbox_iou(predicted_bbox, prepared_sample.reference_payload["bbox"])
         else:
             iou = 0.0
@@ -330,8 +322,7 @@ def evaluate_sample(
     elif prepared_sample.task_name == TASK_STG:
         predicted_sampled_window = None
         if structured is not None:
-            predicted_sampled_window, window_errors = _sampled_window_for_metric(structured)
-            structuring_errors.extend(window_errors)
+            predicted_sampled_window = _sampled_window_for_metric(structured)
         if predicted_sampled_window is None:
             tiou = 0.0
         else:

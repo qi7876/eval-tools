@@ -38,37 +38,31 @@ def _record(structured_prediction: dict | None, *, raw_output: str = "{}") -> St
     )
 
 
-def test_validate_scoreboard_single_missing_bbox_uses_sentinel():
+def test_validate_scoreboard_single_missing_bbox_is_schema_error():
     result = validate_structured_prediction(
         _sample(),
         raw_output='{"text":"1-0"}',
         structured_prediction={"text": "1-0"},
     )
 
-    assert result.errors == []
-    assert result.warnings == ["bbox missing; using sentinel bbox"]
-    assert result.structured_prediction == {
-        "text": "1-0",
-        "bbox": [-1.0, -1.0, -1.0, -1.0],
-    }
+    assert result.errors == ["missing bbox field"]
+    assert result.warnings == []
+    assert result.structured_prediction is None
 
 
-def test_validate_scoreboard_single_invalid_bbox_uses_sentinel():
+def test_validate_scoreboard_single_invalid_bbox_shape_is_schema_error():
     result = validate_structured_prediction(
         _sample(),
         raw_output='{"text":"1-0","bbox":[10,20,30]}',
         structured_prediction={"text": "1-0", "bbox": [10, 20, 30]},
     )
 
-    assert result.errors == []
-    assert result.warnings == ["bbox invalid; using sentinel bbox"]
-    assert result.structured_prediction == {
-        "text": "1-0",
-        "bbox": [-1.0, -1.0, -1.0, -1.0],
-    }
+    assert result.errors == ["bbox must contain exactly 4 values"]
+    assert result.warnings == []
+    assert result.structured_prediction is None
 
 
-def test_validate_scoreboard_single_out_of_range_bbox_uses_sentinel():
+def test_validate_scoreboard_single_preserves_out_of_range_bbox_values():
     result = validate_structured_prediction(
         _sample(),
         raw_output='{"text":"1-0","bbox":[10,20,1300,80]}',
@@ -76,7 +70,22 @@ def test_validate_scoreboard_single_out_of_range_bbox_uses_sentinel():
     )
 
     assert result.errors == []
-    assert result.warnings == ["bbox invalid; using sentinel bbox"]
+    assert result.warnings == []
+    assert result.structured_prediction == {
+        "text": "1-0",
+        "bbox": [10.0, 20.0, 1300.0, 80.0],
+    }
+
+
+def test_validate_scoreboard_single_accepts_explicit_sentinel_bbox():
+    result = validate_structured_prediction(
+        _sample(),
+        raw_output='{"text":"1-0","bbox":[-1,-1,-1,-1]}',
+        structured_prediction={"text": "1-0", "bbox": [-1, -1, -1, -1]},
+    )
+
+    assert result.errors == []
+    assert result.warnings == []
     assert result.structured_prediction == {
         "text": "1-0",
         "bbox": [-1.0, -1.0, -1.0, -1.0],

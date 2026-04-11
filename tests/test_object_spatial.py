@@ -122,10 +122,10 @@ def test_validate_object_spatial_uses_sentinel_for_missing_label():
     assert "missing object label: Player B; using sentinel bbox" in result.warnings
 
 
-def test_validate_object_spatial_uses_sentinel_for_invalid_or_missing_bbox():
+def test_validate_object_spatial_preserves_provided_bbox_values():
     sample = _sample()
 
-    invalid = validate_structured_prediction(
+    result = validate_structured_prediction(
         sample,
         raw_output="{}",
         structured_prediction={
@@ -137,15 +137,45 @@ def test_validate_object_spatial_uses_sentinel_for_invalid_or_missing_bbox():
         },
     )
 
-    assert invalid.errors == []
-    assert invalid.structured_prediction == {
+    assert result.errors == []
+    assert result.warnings == []
+    assert result.structured_prediction == {
+        "text": "right of",
+        "objects": [
+            {"label": "Player A", "bbox": [10.0, 20.0, 1300.0, 40.0]},
+            {"label": "Player B", "bbox": [50.0, 60.0, 70.0, 80.0]},
+        ],
+    }
+
+
+def test_validate_object_spatial_accepts_explicit_sentinel_bbox():
+    sample = _sample()
+
+    result = validate_structured_prediction(
+        sample,
+        raw_output="{}",
+        structured_prediction={
+            "text": "right of",
+            "objects": [
+                {"label": "Player A", "bbox": [-1, -1, -1, -1]},
+                {"label": "Player B", "bbox": [50, 60, 70, 80]},
+            ],
+        },
+    )
+
+    assert result.errors == []
+    assert result.warnings == []
+    assert result.structured_prediction == {
         "text": "right of",
         "objects": [
             {"label": "Player A", "bbox": [-1.0, -1.0, -1.0, -1.0]},
             {"label": "Player B", "bbox": [50.0, 60.0, 70.0, 80.0]},
         ],
     }
-    assert "objects[0].bbox invalid; using sentinel bbox" in invalid.warnings
+
+
+def test_validate_object_spatial_missing_bbox_field_is_schema_error():
+    sample = _sample()
 
     missing = validate_structured_prediction(
         sample,
@@ -159,15 +189,9 @@ def test_validate_object_spatial_uses_sentinel_for_invalid_or_missing_bbox():
         },
     )
 
-    assert missing.errors == []
-    assert missing.structured_prediction == {
-        "text": "right of",
-        "objects": [
-            {"label": "Player A", "bbox": [-1.0, -1.0, -1.0, -1.0]},
-            {"label": "Player B", "bbox": [50.0, 60.0, 70.0, 80.0]},
-        ],
-    }
-    assert "objects[0].bbox missing; using sentinel bbox" in missing.warnings
+    assert missing.errors == ["objects[0] must contain label and bbox"]
+    assert missing.warnings == []
+    assert missing.structured_prediction is None
 
 
 def test_evaluate_object_spatial_matches_boxes_by_label():

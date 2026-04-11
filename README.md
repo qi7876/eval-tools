@@ -609,8 +609,9 @@ Canonical expectations by task:
 ```
 
 During structuring and validation, required OSR labels are still enforced by label.
-If a required label has no explicit valid bbox in the raw model output, the framework normalizes that bbox to the sentinel `[-1, -1, -1, -1]`.
-The text answer is still judged normally, while that object's IoU becomes `0`.
+If a required label is missing entirely, the framework inserts that label in GT order with the sentinel bbox `[-1, -1, -1, -1]` so label-aligned IoU can still be computed.
+If a label row is present, its bbox is not auto-repaired by the framework; schema-invalid rows still fail structuring.
+The text answer is still judged normally, while a sentinel object's IoU becomes `0`.
 
 - `Continuous_Events_Caption`:
 
@@ -786,8 +787,8 @@ Current structurer behavior:
 - it uses the task-specific schema and prompt template to determine which canonical fields the current task expects
 - it should prefer the final answer if the raw output contains reasoning plus a final answer
 - it must not invent missing boxes, intervals, tracking rows, or answer text that do not appear in the raw model output
-- for `Scoreboard_Single`, missing or invalid score-box outputs are normalized to the sentinel bbox `[-1, -1, -1, -1]`
-- for `Objects_Spatial_Relationships`, missing required labels or missing/invalid required object boxes are normalized label-wise to the sentinel bbox `[-1, -1, -1, -1]`
+- for `Scoreboard_Single`, the framework accepts an explicit sentinel bbox `[-1, -1, -1, -1]` from the structurer, but does not auto-fill missing bbox fields
+- for `Objects_Spatial_Relationships`, the framework reorders objects by GT label and auto-fills missing required labels with the sentinel bbox `[-1, -1, -1, -1]`, but does not auto-repair bbox fields for labels that already appear
 
 Retry behavior:
 
@@ -1028,7 +1029,7 @@ The framework follows deterministic failure rules:
 Additionally:
 
 - duplicate tracking predictions on the same sampled frame are collapsed by keeping the first one
-- `Scoreboard_Single` and `Objects_Spatial_Relationships` sentinel boxes contribute IoU `0` instead of forcing the sample to remain unstructured
+- explicit sentinel boxes in `Scoreboard_Single`, and explicit or missing-label auto-filled sentinel boxes in `Objects_Spatial_Relationships`, contribute IoU `0`
 - unsupported raw tasks are ignored and recorded in `build_manifest.json` / `summary.json`
 - supported-task validation problems still stop `prepare-data`
 

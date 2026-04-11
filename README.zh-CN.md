@@ -648,8 +648,9 @@ adapter 应直接返回模型的原始回答字符串。
 ```
 
 在 structurer / validation 阶段，OSR 仍然按 label 强约束。
-如果某个必需 label 在模型原始输出中没有显式有效 bbox，框架会把该对象的 bbox 规范化为 sentinel `[-1, -1, -1, -1]`。
-文本关系仍然正常进入 judge，而该对象的 IoU 会记为 `0`。
+如果某个必需 label 整条缺失，框架会按 GT label 顺序补入该对象，并使用 sentinel bbox `[-1, -1, -1, -1]`，以便继续做按 label 对齐的 IoU 计算。
+如果该 label 已经出现，框架不会再二次修补它的 bbox；不符合 schema 的行仍会直接导致 structuring 失败。
+文本关系仍然正常进入 judge，而 sentinel 对象的 IoU 会记为 `0`。
 
 #### `Continuous_Events_Caption`
 
@@ -816,8 +817,8 @@ concurrency = 1
 - 它根据当前任务的 schema 和 prompt 模板来判断应整理出哪些标准字段
 - 如果 raw output 里同时有分析过程和最终答案，structurer 应优先整理最终答案
 - structurer 不应凭空补出 raw output 里没有出现的 bbox、区间、tracking 或答案文本
-- 对 `Scoreboard_Single`，缺失或非法的计分板框会被规范化为 sentinel bbox `[-1, -1, -1, -1]`
-- 对 `Objects_Spatial_Relationships`，缺失 label、缺失 bbox、或非法 bbox 会按 label 规范化为 sentinel bbox `[-1, -1, -1, -1]`
+- 对 `Scoreboard_Single`，框架会接受 structurer 显式输出的 sentinel bbox `[-1, -1, -1, -1]`，但不会自动补缺失的 bbox 字段
+- 对 `Objects_Spatial_Relationships`，框架会按 GT label 重新排序，并对整条缺失的必需 label 自动补一个 sentinel bbox `[-1, -1, -1, -1]`，但不会修补已经出现 label 的 bbox 字段
 
 当前 retry 规则：
 
@@ -1057,7 +1058,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 此外：
 
 - 同一 sampled frame 上多个 tracking 预测会保留第一个
-- `Scoreboard_Single` 和 `Objects_Spatial_Relationships` 的 sentinel bbox 会让对应 IoU 记为 `0`，而不是把样本卡死在未结构化状态
+- `Scoreboard_Single` 的显式 sentinel bbox，以及 `Objects_Spatial_Relationships` 中显式或由缺失 label 自动补出的 sentinel bbox，都会让对应 IoU 记为 `0`
 - 原始数据中的 unsupported task 会被忽略，并记录到 `build_manifest.json` / `summary.json`
 - 支持任务本身的数据校验错误仍然会阻断 `prepare-data`
 

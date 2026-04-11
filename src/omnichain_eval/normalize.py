@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 from .constants import (
-    NORMALIZED_COORDINATE_MAX,
+    SENTINEL_BBOX,
     TASK_CONTINUOUS_ACTIONS,
     TASK_CONTINUOUS_EVENTS,
     TASK_OBJECTS_SPATIAL,
@@ -15,10 +15,6 @@ from .constants import (
     TEXT_ONLY_TASKS,
 )
 from .schema import PreparedSample, StructuredPredictionResult
-
-_COORD_EPSILON = 1e-6
-_CORNER_BOX_SENTINEL = [-1.0, -1.0, -1.0, -1.0]
-
 
 def _coerce_text_field(payload: dict[str, Any], errors: list[str]) -> str:
     if "text" not in payload:
@@ -31,10 +27,8 @@ def _coerce_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
     if not isinstance(value, list):
         errors.append(f"{field_name} must be a list")
         return []
-    if len(value) == 0:
-        return []
     if len(value) != 4:
-        errors.append(f"{field_name} must be empty or contain exactly 4 values")
+        errors.append(f"{field_name} must contain exactly 4 values")
         return []
     parsed: list[float] = []
     for item in value:
@@ -50,27 +44,9 @@ def _coerce_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
     return parsed
 
 
-def _is_corner_box_sentinel(value: Any) -> bool:
-    if not isinstance(value, list) or len(value) != 4:
-        return False
-    try:
-        return all(float(item) == -1.0 for item in value)
-    except (TypeError, ValueError):
-        return False
-
-
 def _coerce_normalized_corner_box(value: Any, field_name: str, errors: list[str]) -> list[float]:
     box = _coerce_box(value, field_name, errors)
     if len(box) != 4:
-        return []
-    x1, y1, x2, y2 = box
-    if min(box) < -_COORD_EPSILON or max(box) > NORMALIZED_COORDINATE_MAX + _COORD_EPSILON:
-        errors.append(
-            f"{field_name} must stay within normalized_1000 range [0, {int(NORMALIZED_COORDINATE_MAX)}]"
-        )
-        return []
-    if x1 > x2 + _COORD_EPSILON or y1 > y2 + _COORD_EPSILON:
-        errors.append(f"{field_name} must satisfy x1 <= x2 and y1 <= y2")
         return []
     return box
 
@@ -79,44 +55,7 @@ def _coerce_normalized_mot_box(value: Any, field_name: str, errors: list[str]) -
     box = _coerce_box(value, field_name, errors)
     if len(box) != 4:
         return []
-    left, top, width, height = box
-    if (
-        left < -_COORD_EPSILON
-        or top < -_COORD_EPSILON
-        or width < -_COORD_EPSILON
-        or height < -_COORD_EPSILON
-        or left > NORMALIZED_COORDINATE_MAX + _COORD_EPSILON
-        or top > NORMALIZED_COORDINATE_MAX + _COORD_EPSILON
-    ):
-        errors.append(
-            f"{field_name} must stay within normalized_1000 range [0, {int(NORMALIZED_COORDINATE_MAX)}]"
-        )
-        return []
-    if left + width > NORMALIZED_COORDINATE_MAX + _COORD_EPSILON:
-        errors.append(
-            f"{field_name} must satisfy left + width <= {int(NORMALIZED_COORDINATE_MAX)}"
-        )
-        return []
-    if top + height > NORMALIZED_COORDINATE_MAX + _COORD_EPSILON:
-        errors.append(
-            f"{field_name} must satisfy top + height <= {int(NORMALIZED_COORDINATE_MAX)}"
-        )
-        return []
     return box
-
-
-def _scoreboard_bbox_or_sentinel(value: Any, warnings: list[str]) -> list[float]:
-    if value is None:
-        warnings.append("bbox missing; using sentinel bbox")
-        return list(_CORNER_BOX_SENTINEL)
-    if _is_corner_box_sentinel(value):
-        return list(_CORNER_BOX_SENTINEL)
-    errors: list[str] = []
-    bbox = _coerce_normalized_corner_box(value, "bbox", errors)
-    if len(bbox) != 4 or errors:
-        warnings.append("bbox invalid; using sentinel bbox")
-        return list(_CORNER_BOX_SENTINEL)
-    return bbox
 
 
 def _required_object_labels(prepared_sample: PreparedSample, errors: list[str]) -> list[str]:
@@ -153,7 +92,7 @@ def _coerce_labeled_objects(
         if not isinstance(row, dict):
             errors.append(f"objects[{index}] must be an object")
             continue
-        if "label" not in row:
+        if "label" not in row or "bbox" not in row:
             errors.append(f"objects[{index}] must contain label and bbox")
             continue
         label = str(row["label"]).strip()
@@ -166,33 +105,27 @@ def _coerce_labeled_objects(
         if label not in required_label_set:
             errors.append(f"unexpected object label: {label}")
             continue
-        bbox_value = row.get("bbox")
-        if bbox_value is None:
-            warnings.append(f"objects[{index}].bbox missing; using sentinel bbox")
-            bbox = list(_CORNER_BOX_SENTINEL)
-        elif _is_corner_box_sentinel(bbox_value):
-            bbox = list(_CORNER_BOX_SENTINEL)
-        else:
-            bbox_errors: list[str] = []
-            bbox = _coerce_normalized_corner_box(
-                bbox_value,
-                f"objects[{index}].bbox",
-                bbox_errors,
-            )
-            if len(bbox) != 4 or bbox_errors:
-                warnings.append(f"objects[{index}].bbox invalid; using sentinel bbox")
-                bbox = list(_CORNER_BOX_SENTINEL)
+        bbox_errors: list[str] = []
+        bbox = _coerce_normalized_corner_box(
+            row["bbox"],
+            f"objects[{index}].bbox",
+            bbox_errors,
+        )
+        if len(bbox) != 4 or bbox_errors:
+            errors.extend(bbox_errors)
+            continue
         predicted_by_label[label] = {"label": label, "bbox": bbox}
+
+    if errors:
+        return []
 
     for label in required_labels:
         if label not in predicted_by_label:
             warnings.append(f"missing object label: {label}; using sentinel bbox")
             predicted_by_label[label] = {
                 "label": label,
-                "bbox": list(_CORNER_BOX_SENTINEL),
+                "bbox": list(SENTINEL_BBOX),
             }
-    if errors:
-        return []
     return [predicted_by_label[label] for label in required_labels]
 
 
@@ -298,9 +231,18 @@ def validate_structured_prediction(
         )
 
     if task_name == TASK_SCOREBOARD_SINGLE:
+        bbox: list[float] = []
+        if "bbox" not in structured_prediction:
+            errors.append("missing bbox field")
+        else:
+            bbox = _coerce_normalized_corner_box(
+                structured_prediction["bbox"],
+                "bbox",
+                errors,
+            )
         validated = {
             "text": _coerce_text_field(structured_prediction, errors),
-            "bbox": _scoreboard_bbox_or_sentinel(structured_prediction.get("bbox"), warnings),
+            "bbox": bbox,
         }
         return StructuredPredictionResult(
             task_name=task_name,

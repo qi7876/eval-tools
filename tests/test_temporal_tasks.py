@@ -254,4 +254,4 @@ def test_evaluate_stg_reversed_window_scores_zero_in_evaluation():
 
     assert evaluation.component_metrics["tiou"] == 0.0
     assert evaluation.component_pass["tiou_pass"] == 0
-    assert "time_window_sampled start > end: 8-4" in evaluation.structuring_errors
+    assert evaluation.structuring_errors == []
