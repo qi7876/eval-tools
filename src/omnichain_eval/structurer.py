@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import sys
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +16,7 @@ from .constants import (
     TASK_STG,
     STRUCTURER_MODEL_DEFAULT,
 )
+from .logging_utils import get_logger, log_event
 from .normalize import validate_structured_prediction
 from .schema import PreparedSample, StructuredPredictionResult
 from .template_pack import TaskTemplate, TemplatePackError, load_task_template_pack, render_template_text
@@ -30,6 +31,7 @@ _ORACLE_UPSTREAM_TASKS = [TASK_CONTINUOUS_ACTIONS, TASK_STG]
 
 StructurerPromptTemplateError = TemplatePackError
 StructurerPromptTemplate = TaskTemplate
+LOGGER = get_logger(__name__)
 
 
 class StructurerResponseFormatError(ValueError):
@@ -206,21 +208,18 @@ class StructurerService:
         raw_response: str | None,
         reason: str,
     ) -> None:
-        print(
-            "\n".join(
-                [
-                    "[Structurer Debug] failure detected",
-                    f"[Structurer Debug] sample_id={sample.sample_id}",
-                    f"[Structurer Debug] task_name={sample.task_name}",
-                    f"[Structurer Debug] reason={reason}",
-                    "[Structurer Debug] prompt:",
-                    rendered_prompt.prompt_text,
-                    "[Structurer Debug] response:",
-                    raw_response if raw_response is not None else "<no response>",
-                ]
-            ),
-            file=sys.stderr,
-            flush=True,
+        log_event(
+            LOGGER,
+            logging.ERROR,
+            "structurer_failure",
+            sample_id=sample.sample_id,
+            task_name=sample.task_name,
+            reason=reason,
+        )
+        LOGGER.error("structurer_prompt:\n%s", rendered_prompt.prompt_text)
+        LOGGER.error(
+            "structurer_response:\n%s",
+            raw_response if raw_response is not None else "<no response>",
         )
 
     def _parse_payload(self, raw_response: str) -> dict[str, Any]:

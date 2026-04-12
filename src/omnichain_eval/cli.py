@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +32,7 @@ from .experiments import (
     summarize_experiment_b,
 )
 from .judge import JudgeResponseFormatExhaustedError, OpenAIJudgeClient, StaticJudgeClient
+from .logging_utils import get_logger, log_event, setup_run_logging
 from .metrics import evaluate_sample
 from .protocols import resolve_protocol
 from .prompting import (
@@ -58,6 +61,8 @@ from .structurer import (
 )
 from .utils import append_jsonl, ensure_directory, read_json, read_jsonl, write_json, write_jsonl
 
+LOGGER = get_logger(__name__)
+
 
 @dataclass(slots=True)
 class PendingStructuringTask:
@@ -77,6 +82,138 @@ class PendingEvaluationTask:
     pair_id: str | None = None
     upstream_sample_id: str | None = None
     downstream_sample_id: str | None = None
+
+
+@dataclass(slots=True)
+class StageProgressSnapshot:
+    predicted: int
+    structured: int
+    judged: int
+    prediction_errors: int
+    structuring_errors: int
+    evaluation_errors: int
+    blocked: int = 0
+
+    @property
+    def completed_units(self) -> int:
+        return self.predicted + self.structured + self.judged
+
+
+@dataclass(slots=True)
+class StageProgressLogger:
+    logger: Any
+    event_name: str
+    total_samples: int
+    checkpoint_units: int = 0
+    next_checkpoint_units: int = 0
+
+    def __post_init__(self) -> None:
+        checkpoint_samples = 1 if self.total_samples < 20 else max(1, ceil(self.total_samples * 0.05))
+        self.checkpoint_units = checkpoint_samples * 3
+        self.next_checkpoint_units = self.checkpoint_units
+
+    def log_start(self, **fields: Any) -> None:
+        log_event(self.logger, logging.INFO, f"{self.event_name}_start", **fields)
+
+    def log_progress(
+        self,
+        snapshot: StageProgressSnapshot,
+        *,
+        force: bool = False,
+        event_suffix: str = "progress",
+    ) -> None:
+        if not force and snapshot.completed_units < self.next_checkpoint_units:
+            return
+        while snapshot.completed_units >= self.next_checkpoint_units:
+            self.next_checkpoint_units += self.checkpoint_units
+        log_event(
+            self.logger,
+            logging.INFO,
+            f"{self.event_name}_{event_suffix}",
+            prediction=f"{snapshot.predicted}/{self.total_samples}",
+            structured=f"{snapshot.structured}/{self.total_samples}",
+            judged=f"{snapshot.judged}/{self.total_samples}",
+            prediction_errors=snapshot.prediction_errors,
+            structuring_errors=snapshot.structuring_errors,
+            evaluation_errors=snapshot.evaluation_errors,
+            blocked_chain=snapshot.blocked,
+        )
+
+    def log_done(self, snapshot: StageProgressSnapshot) -> None:
+        self.log_progress(snapshot, force=True, event_suffix="done")
+
+
+@dataclass(slots=True)
+class OracleVariantProgressLogger:
+    logger: Any
+    variant: str
+    total_pairs: int
+    checkpoint: int = 0
+    next_checkpoint: int = 0
+
+    def __post_init__(self) -> None:
+        self.checkpoint = 1 if self.total_pairs < 20 else max(1, ceil(self.total_pairs * 0.05))
+        self.next_checkpoint = self.checkpoint
+
+    def log_start(self, *, completed_pairs: int, failed_pairs: int) -> None:
+        log_event(
+            self.logger,
+            logging.INFO,
+            "oracle_variant_start",
+            variant=self.variant,
+            completed_pairs=f"{completed_pairs}/{self.total_pairs}",
+            failed_pairs=failed_pairs,
+            remaining_pairs=max(self.total_pairs - completed_pairs - failed_pairs, 0),
+        )
+
+    def log_progress(self, *, completed_pairs: int, failed_pairs: int, force: bool = False) -> None:
+        processed_pairs = completed_pairs + failed_pairs
+        if not force and processed_pairs < self.next_checkpoint:
+            return
+        while processed_pairs >= self.next_checkpoint:
+            self.next_checkpoint += self.checkpoint
+        log_event(
+            self.logger,
+            logging.INFO,
+            "oracle_variant_progress",
+            variant=self.variant,
+            completed_pairs=f"{completed_pairs}/{self.total_pairs}",
+            failed_pairs=failed_pairs,
+            remaining_pairs=max(self.total_pairs - processed_pairs, 0),
+        )
+
+    def log_done(self, *, completed_pairs: int, failed_pairs: int) -> None:
+        log_event(
+            self.logger,
+            logging.INFO,
+            "oracle_variant_done",
+            variant=self.variant,
+            completed_pairs=f"{completed_pairs}/{self.total_pairs}",
+            failed_pairs=failed_pairs,
+            remaining_pairs=max(self.total_pairs - completed_pairs - failed_pairs, 0),
+        )
+
+
+def _stage_progress_snapshot(
+    *,
+    target_sample_ids: set[str],
+    prediction_map: dict[str, str],
+    structured_map: dict[str, StructuredPredictionRecord],
+    results_map: dict[str, EvaluationRecord],
+    prediction_errors: list[dict[str, str]],
+    structuring_errors: list[dict[str, str]],
+    evaluation_errors: list[dict[str, str]],
+    blocked_sample_ids: list[str] | None = None,
+) -> StageProgressSnapshot:
+    return StageProgressSnapshot(
+        predicted=len(target_sample_ids & set(prediction_map)),
+        structured=len(target_sample_ids & set(structured_map)),
+        judged=len(target_sample_ids & set(results_map)),
+        prediction_errors=len(prediction_errors),
+        structuring_errors=len(structuring_errors),
+        evaluation_errors=len(evaluation_errors),
+        blocked=len(set(blocked_sample_ids or [])),
+    )
 
 
 def _judge_client_from_config(judge_config: JudgeConfig):
@@ -520,6 +657,8 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         artifacts_root
         / (config.run_name or _default_run_name(model_name, runtime_protocol.protocol_id))
     )
+    log_path = run_dir / "run.log"
+    setup_run_logging(log_path)
     predictions_path = run_dir / "predictions.jsonl"
     structured_predictions_path = run_dir / "structured_predictions.jsonl"
     results_path = run_dir / "results.jsonl"
@@ -556,10 +695,33 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     completed_before_run = len(
         [sample_id for sample_id in existing_records_by_sample_id if sample_id in target_sample_ids]
     )
-    if completed_before_run:
-        print(f"Resuming run from {run_dir} with {completed_before_run} completed sample(s).")
 
     judge_client = _judge_client_from_config(config.judge)
+
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "run_init",
+        model_name=model_name,
+        protocol_id=config.protocol,
+        run_dir=run_dir,
+        log_path=log_path,
+        total_target_samples=len(target_samples),
+        normal_samples=len(normal_target_samples),
+        chain_samples=len(chain_pairs),
+        oracle_track=config.enable_oracle_track,
+        completed_before_run=completed_before_run,
+        structurer_concurrency=config.structurer.concurrency,
+        judge_concurrency=config.judge.concurrency,
+    )
+    if completed_before_run:
+        log_event(
+            LOGGER,
+            logging.INFO,
+            "run_resume",
+            run_dir=run_dir,
+            completed_before_run=completed_before_run,
+        )
 
     prediction_errors_this_run: list[dict[str, str]] = []
     structuring_errors_this_run: list[dict[str, str]] = []
@@ -572,6 +734,16 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     structured_chain_sample_ids_this_run: list[str] = []
     completed_normal_sample_ids_this_run: list[str] = []
     completed_chain_sample_ids_this_run: list[str] = []
+    normal_progress_logger = StageProgressLogger(
+        logger=LOGGER,
+        event_name="normal_stage",
+        total_samples=len(normal_target_samples),
+    )
+    chain_progress_logger = StageProgressLogger(
+        logger=LOGGER,
+        event_name="chain_stage",
+        total_samples=len(chain_pairs),
+    )
 
     with ThreadPoolExecutor(
         max_workers=config.structurer.concurrency,
@@ -582,6 +754,37 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
     ) as judge_executor:
         pending_structuring_tasks: dict[str, PendingStructuringTask] = {}
         pending_evaluation_tasks: dict[str, PendingEvaluationTask] = {}
+
+        def log_normal_progress(*, force: bool = False, event_suffix: str = "progress") -> None:
+            normal_progress_logger.log_progress(
+                _stage_progress_snapshot(
+                    target_sample_ids=normal_target_sample_ids,
+                    prediction_map=normal_prediction_map,
+                    structured_map=normal_structured_by_sample_id,
+                    results_map=normal_results_by_sample_id,
+                    prediction_errors=prediction_errors_this_run,
+                    structuring_errors=structuring_errors_this_run,
+                    evaluation_errors=evaluation_errors_this_run,
+                ),
+                force=force,
+                event_suffix=event_suffix,
+            )
+
+        def log_chain_progress(*, force: bool = False, event_suffix: str = "progress") -> None:
+            chain_progress_logger.log_progress(
+                _stage_progress_snapshot(
+                    target_sample_ids=chain_downstream_sample_ids,
+                    prediction_map=chain_prediction_map,
+                    structured_map=chain_structured_by_sample_id,
+                    results_map=chain_results_by_sample_id,
+                    prediction_errors=chain_prediction_errors_this_run,
+                    structuring_errors=chain_structuring_errors_this_run,
+                    evaluation_errors=chain_evaluation_errors_this_run,
+                    blocked_sample_ids=blocked_chain_sample_ids,
+                ),
+                force=force,
+                event_suffix=event_suffix,
+            )
 
         def submit_structuring(
             *,
@@ -649,16 +852,31 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                         pair_id=task.pair_id,
                     )
                 )
+                log_event(
+                    LOGGER,
+                    logging.ERROR,
+                    "structuring_error",
+                    sample_id=task.sample.sample_id,
+                    channel=task.channel,
+                    pair_id=task.pair_id,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                if task.channel == "chain":
+                    log_chain_progress()
+                else:
+                    log_normal_progress()
                 return
 
             if task.channel == "chain":
                 chain_structured_by_sample_id[task.sample.sample_id] = record
                 structured_chain_sample_ids_this_run.append(task.sample.sample_id)
                 _append_structured_artifact(chain_structured_predictions_path, record)
+                log_chain_progress()
             else:
                 normal_structured_by_sample_id[task.sample.sample_id] = record
                 structured_normal_sample_ids_this_run.append(task.sample.sample_id)
                 _append_structured_artifact(structured_predictions_path, record)
+                log_normal_progress()
 
             if task.sample.sample_id in existing_records_by_sample_id:
                 return
@@ -696,6 +914,19 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                         pair_id=task.pair_id,
                     )
                 )
+                log_event(
+                    LOGGER,
+                    logging.ERROR,
+                    "evaluation_error",
+                    sample_id=task.sample.sample_id,
+                    channel=task.channel,
+                    pair_id=task.pair_id,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                if task.channel == "chain":
+                    log_chain_progress()
+                else:
+                    log_normal_progress()
                 return
 
             existing_records_by_sample_id[task.sample.sample_id] = record
@@ -711,10 +942,12 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                         "downstream_sample_id": task.downstream_sample_id,
                     },
                 )
+                log_chain_progress()
             else:
                 normal_results_by_sample_id[task.sample.sample_id] = record
                 completed_normal_sample_ids_this_run.append(task.sample.sample_id)
                 _append_result(results_path, record)
+                log_normal_progress()
 
         def drain_completed_structuring_tasks(*, wait_all: bool) -> None:
             sample_ids = (
@@ -748,6 +981,13 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
             drain_completed_structuring_tasks(wait_all=wait_all)
             drain_completed_evaluation_tasks(wait_all=wait_all)
 
+        normal_progress_logger.log_start(
+            total_samples=len(normal_target_samples),
+            resumed_prediction=len(normal_target_sample_ids & set(normal_prediction_map)),
+            resumed_structured=len(normal_target_sample_ids & set(normal_structured_by_sample_id)),
+            resumed_judged=len(normal_target_sample_ids & set(normal_results_by_sample_id)),
+        )
+        log_normal_progress(force=True)
         for sample in normal_target_samples:
             if sample.sample_id in existing_records_by_sample_id:
                 drain_pending(wait_all=False)
@@ -766,6 +1006,14 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     prediction_errors_this_run.append(
                         _error_summary(sample_id=sample.sample_id, stage="prediction", exc=exc)
                     )
+                    log_event(
+                        LOGGER,
+                        logging.ERROR,
+                        "prediction_error",
+                        sample_id=sample.sample_id,
+                        reason=f"{type(exc).__name__}: {exc}",
+                    )
+                    log_normal_progress()
                     drain_pending(wait_all=False)
                     continue
                 normal_prediction_map[sample.sample_id] = raw_output
@@ -775,6 +1023,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     raw_output,
                     config.protocol,
                 )
+                log_normal_progress()
 
             if sample.sample_id in pending_evaluation_tasks:
                 drain_pending(wait_all=False)
@@ -797,6 +1046,13 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
 
         drain_pending(wait_all=False)
 
+        chain_progress_logger.log_start(
+            total_samples=len(chain_pairs),
+            resumed_prediction=len(chain_downstream_sample_ids & set(chain_prediction_map)),
+            resumed_structured=len(chain_downstream_sample_ids & set(chain_structured_by_sample_id)),
+            resumed_judged=len(chain_downstream_sample_ids & set(chain_results_by_sample_id)),
+        )
+        log_chain_progress(force=True)
         for pair in chain_pairs:
             downstream_sample = prepared_by_sample_id[pair.downstream_sample_id]
             if downstream_sample.sample_id in existing_records_by_sample_id:
@@ -805,7 +1061,18 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
 
             upstream_raw_output = normal_prediction_map.get(pair.upstream_sample_id)
             if upstream_raw_output is None:
-                blocked_chain_sample_ids.append(pair.downstream_sample_id)
+                if pair.downstream_sample_id not in blocked_chain_sample_ids:
+                    blocked_chain_sample_ids.append(pair.downstream_sample_id)
+                    log_event(
+                        LOGGER,
+                        logging.WARNING,
+                        "chain_blocked",
+                        sample_id=pair.downstream_sample_id,
+                        upstream_sample_id=pair.upstream_sample_id,
+                        pair_id=pair.pair_id,
+                        reason="missing_upstream_prediction",
+                    )
+                    log_chain_progress()
                 drain_pending(wait_all=False)
                 continue
 
@@ -831,6 +1098,15 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                             pair_id=pair.pair_id,
                         )
                     )
+                    log_event(
+                        LOGGER,
+                        logging.ERROR,
+                        "chain_prediction_error",
+                        sample_id=pair.downstream_sample_id,
+                        pair_id=pair.pair_id,
+                        reason=f"{type(exc).__name__}: {exc}",
+                    )
+                    log_chain_progress()
                     drain_pending(wait_all=False)
                     continue
                 chain_prediction_map[pair.downstream_sample_id] = raw_output
@@ -840,6 +1116,7 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                     raw_output,
                     config.protocol,
                 )
+                log_chain_progress()
 
             if pair.downstream_sample_id in pending_evaluation_tasks:
                 drain_pending(wait_all=False)
@@ -864,6 +1141,8 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
 
         drain_completed_structuring_tasks(wait_all=True)
         drain_completed_evaluation_tasks(wait_all=True)
+        log_normal_progress(force=True, event_suffix="done")
+        log_chain_progress(force=True, event_suffix="done")
 
     ordered_records = [
         existing_records_by_sample_id[sample.sample_id]
@@ -889,9 +1168,26 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
             else None
         )
         if config.enable_oracle_track:
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "oracle_stage_start",
+                total_pairs=len(chain_pairs),
+                variants=list(ORACLE_EXPERIMENT_B_VARIANTS),
+            )
             for variant in ORACLE_EXPERIMENT_B_VARIANTS:
                 variant_pair_results = oracle_variant_pair_results[variant]
                 variant_results_path = oracle_pair_results_paths[variant]
+                variant_failed_pairs = 0
+                variant_progress_logger = OracleVariantProgressLogger(
+                    logger=LOGGER,
+                    variant=variant,
+                    total_pairs=len(chain_pairs),
+                )
+                variant_progress_logger.log_start(
+                    completed_pairs=len(variant_pair_results),
+                    failed_pairs=variant_failed_pairs,
+                )
                 for pair in chain_pairs:
                     if pair.pair_id in variant_pair_results:
                         continue
@@ -915,6 +1211,20 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                                 "reason": f"{type(exc.cause).__name__}: {exc.cause}",
                             }
                         )
+                        variant_failed_pairs += 1
+                        log_event(
+                            LOGGER,
+                            logging.ERROR,
+                            "oracle_pair_error",
+                            variant=variant,
+                            pair_id=exc.pair_id,
+                            stage=exc.stage,
+                            reason=f"{type(exc.cause).__name__}: {exc.cause}",
+                        )
+                        variant_progress_logger.log_progress(
+                            completed_pairs=len(variant_pair_results),
+                            failed_pairs=variant_failed_pairs,
+                        )
                         continue
                     variant_pair_results[pair.pair_id] = pair_result
                     _append_oracle_pair_result(
@@ -923,6 +1233,28 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
                         pair_result["upstream"],
                         pair_result["downstream"],
                     )
+                    variant_progress_logger.log_progress(
+                        completed_pairs=len(variant_pair_results),
+                        failed_pairs=variant_failed_pairs,
+                    )
+                variant_progress_logger.log_done(
+                    completed_pairs=len(variant_pair_results),
+                    failed_pairs=variant_failed_pairs,
+                )
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "oracle_stage_done",
+                total_pairs=len(chain_pairs),
+                total_errors=len(oracle_errors_this_run),
+            )
+        else:
+            log_event(
+                LOGGER,
+                logging.INFO,
+                "oracle_stage_skipped",
+                reason="disabled",
+            )
 
         oracle_summary = summarize_experiment_b(
             chain_pairs,
@@ -1070,16 +1402,34 @@ def cmd_run_eval(args: argparse.Namespace) -> int:
         "data_status": protocol_manifest["data_status"],
         "run_status": run_status,
     }
-    write_json(summary_path, summary_payload)
-    print(
-        "Run status: "
-        f"{completed_total}/{len(target_samples)} completed, "
-        f"{len(run_status['pending_prediction_sample_ids'])} pending prediction, "
-        f"{len(run_status['predicted_not_structured_sample_ids'])} predicted but not structured, "
-        f"{len(run_status['structured_not_evaluated_sample_ids'])} structured but not evaluated, "
-        f"{len(run_status['pending_chain_prediction_sample_ids'])} pending chain prediction."
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "summary_write_start",
+        summary_path=summary_path,
+        completed_total=completed_total,
+        total_target_samples=len(target_samples),
     )
-    print(f"Wrote evaluation artifacts to {run_dir}")
+    write_json(summary_path, summary_payload)
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "summary_write_done",
+        summary_path=summary_path,
+        completed_total=completed_total,
+        total_target_samples=len(target_samples),
+        pending_prediction=len(run_status["pending_prediction_sample_ids"]),
+        predicted_not_structured=len(run_status["predicted_not_structured_sample_ids"]),
+        structured_not_evaluated=len(run_status["structured_not_evaluated_sample_ids"]),
+        pending_chain_prediction=len(run_status["pending_chain_prediction_sample_ids"]),
+    )
+    log_event(
+        LOGGER,
+        logging.INFO,
+        "run_done",
+        run_dir=run_dir,
+        summary_path=summary_path,
+    )
     return 0
 
 

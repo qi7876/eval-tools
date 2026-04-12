@@ -933,6 +933,7 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 
 其中包括：
 
+- `run.log`
 - `predictions.jsonl`
 - `structured_predictions.jsonl`
 - `results.jsonl`
@@ -943,6 +944,7 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 
 这些文件的语义是：
 
+- `run.log`：本轮运行的详细日志，包括阶段切换、prediction / structurer / judge 聚合进度、OracleTrack 各 variant 的进度，以及 structurer / judge 失败时的 prompt / response 调试信息
 - `predictions.jsonl`：独立任务和链式上游任务的原始模型输出
 - `structured_predictions.jsonl`：这些样本校验通过的结构化输出
 - `results.jsonl`：这些样本的完成态评测结果

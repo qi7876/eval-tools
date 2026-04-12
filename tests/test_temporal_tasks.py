@@ -13,7 +13,9 @@ class CapturingJudge(JudgeClient):
         question_text: str,
         reference_payload: dict,
         prediction_payload: dict,
+        sample_id: str | None = None,
     ) -> JudgeDecision:
+        del sample_id
         self.calls.append(
             {
                 "task_name": task_name,

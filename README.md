@@ -902,6 +902,7 @@ artifacts/runs/<timestamp>_<model_name>_<protocol_id>/
 
 Files:
 
+- `run.log`
 - `predictions.jsonl`
 - `structured_predictions.jsonl`
 - `results.jsonl`
@@ -912,6 +913,7 @@ Files:
 
 Artifact semantics:
 
+- `run.log` stores the detailed runtime log for this invocation, including stage transitions, aggregated prediction/structurer/judge progress, OracleTrack variant progress, and structurer/judge failure payloads
 - `predictions.jsonl` stores raw model outputs for independent tasks and chain-upstream tasks
 - `structured_predictions.jsonl` stores validated structured outputs for those samples
 - `results.jsonl` stores completed evaluation records for those samples

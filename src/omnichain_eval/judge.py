@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
-import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,7 @@ from .constants import (
     JUDGE_MODEL_DEFAULT,
     JUDGE_REQUIRED_TASKS,
 )
+from .logging_utils import get_logger, log_event
 from .schema import JudgeDecision
 from .template_pack import (
     TaskTemplate,
@@ -34,6 +35,7 @@ _ALLOWED_JUDGE_VARIABLES = {
 JudgePromptTemplateError = TemplatePackError
 JudgePromptTemplate = TaskTemplate
 JudgePromptPack = dict[str, TaskTemplate]
+LOGGER = get_logger(__name__)
 
 
 class JudgeClient(ABC):
@@ -46,6 +48,7 @@ class JudgeClient(ABC):
         question_text: str,
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
+        sample_id: str | None = None,
     ) -> JudgeDecision:
         raise NotImplementedError
 
@@ -80,7 +83,9 @@ class StaticJudgeClient(JudgeClient):
         question_text: str,
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
+        sample_id: str | None = None,
     ) -> JudgeDecision:
+        del task_name, question_text, reference_payload, prediction_payload, sample_id
         final_pass = 1 if self.always_pass else 0
         return JudgeDecision(
             correctness=final_pass,
@@ -265,26 +270,22 @@ class OpenAIJudgeClient(JudgeClient):
     def _emit_failure_debug_log(
         self,
         *,
+        sample_id: str | None,
         task_name: str,
         prompt_text: str,
         raw_response: str | None,
         reason: str,
     ) -> None:
-        print(
-            "\n".join(
-                [
-                    "[Judge Debug] failure detected",
-                    f"[Judge Debug] task_name={task_name}",
-                    f"[Judge Debug] reason={reason}",
-                    "[Judge Debug] prompt:",
-                    prompt_text,
-                    "[Judge Debug] response:",
-                    raw_response if raw_response is not None else "<no response>",
-                ]
-            ),
-            file=sys.stderr,
-            flush=True,
+        log_event(
+            LOGGER,
+            logging.ERROR,
+            "judge_failure",
+            sample_id=sample_id,
+            task_name=task_name,
+            reason=reason,
         )
+        LOGGER.error("judge_prompt:\n%s", prompt_text)
+        LOGGER.error("judge_response:\n%s", raw_response if raw_response is not None else "<no response>")
 
     def judge(
         self,
@@ -292,6 +293,7 @@ class OpenAIJudgeClient(JudgeClient):
         question_text: str,
         reference_payload: dict[str, Any],
         prediction_payload: dict[str, Any],
+        sample_id: str | None = None,
     ) -> JudgeDecision:
         prompt_text = render_judge_prompt(
             self.prompt_pack,
@@ -313,6 +315,7 @@ class OpenAIJudgeClient(JudgeClient):
                 )
             except Exception as exc:  # noqa: BLE001
                 self._emit_failure_debug_log(
+                    sample_id=sample_id,
                     task_name=task_name,
                     prompt_text=prompt_text,
                     raw_response=None,
@@ -330,6 +333,7 @@ class OpenAIJudgeClient(JudgeClient):
             if attempt_index + 1 >= max_attempts:
                 failure_reason = f"{last_error_reason} after {max_attempts} attempt(s)"
                 self._emit_failure_debug_log(
+                    sample_id=sample_id,
                     task_name=task_name,
                     prompt_text=prompt_text,
                     raw_response=last_raw_response,
@@ -340,6 +344,7 @@ class OpenAIJudgeClient(JudgeClient):
                     last_raw_response,
                 )
         self._emit_failure_debug_log(
+            sample_id=sample_id,
             task_name=task_name,
             prompt_text=prompt_text,
             raw_response=last_raw_response,

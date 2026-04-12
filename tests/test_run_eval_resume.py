@@ -81,7 +81,9 @@ class AlwaysBrokenJudge(JudgeClient):
         question_text: str,
         reference_payload: dict,
         prediction_payload: dict,
+        sample_id: str | None = None,
     ):
+        del task_name, question_text, reference_payload, prediction_payload, sample_id
         raise JudgeResponseFormatExhaustedError(
             "judge response did not match schema after 2 attempt(s)"
         )
@@ -307,7 +309,9 @@ def test_run_eval_retries_predicted_but_not_evaluated_samples_on_next_run(monkey
             question_text: str,
             reference_payload: dict,
             prediction_payload: dict,
+            sample_id: str | None = None,
         ):
+            del sample_id
             self.calls += 1
             if self.calls == 1:
                 raise JudgeResponseFormatExhaustedError(
@@ -680,6 +684,23 @@ def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path)
     assert "chain_success_wo_track" in experiment_b["base"]
     assert "chain_success_wo_track" in experiment_b["oracle_language"]
     assert "chain_success" not in experiment_b["oracle_language"]
+    run_log = (run_dir / "run.log").read_text(encoding="utf-8")
+    assert "event=run_init" in run_log
+    assert "event=normal_stage_start" in run_log
+    assert "event=normal_stage_progress" in run_log
+    assert "event=normal_stage_done" in run_log
+    assert "event=chain_stage_start" in run_log
+    assert "event=chain_stage_progress" in run_log
+    assert "event=chain_stage_done" in run_log
+    assert "event=oracle_stage_start" in run_log
+    assert 'event=oracle_variant_start variant="language"' in run_log
+    assert 'event=oracle_variant_start variant="visual"' in run_log
+    assert 'event=oracle_variant_start variant="language_visual"' in run_log
+    assert "event=oracle_stage_done" in run_log
+    assert "event=summary_write_done" in run_log
+    assert 'prediction="1/1"' in run_log
+    assert 'structured="1/1"' in run_log
+    assert 'judged="1/1"' in run_log
 
     adapter.calls.clear()
     for sample_id in adapter.inputs:

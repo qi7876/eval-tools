@@ -12,6 +12,7 @@ from omnichain_eval.judge import (
     load_judge_prompt_pack,
     render_judge_prompt,
 )
+from omnichain_eval.logging_utils import setup_run_logging
 
 
 JUDGE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1"
@@ -320,7 +321,7 @@ def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
     assert created["client"].chat.completions.calls == 2
 
 
-def test_openai_judge_logs_prompt_and_response_on_failure(monkeypatch, capsys):
+def test_openai_judge_logs_prompt_and_response_on_failure(monkeypatch, tmp_path, capsys):
     responses = [
         _completion(json.dumps({"wrong_key": 1})),
         _completion(json.dumps({"still_wrong": 2})),
@@ -347,6 +348,7 @@ def test_openai_judge_logs_prompt_and_response_on_failure(monkeypatch, capsys):
         prompt_root=JUDGE_PROMPT_ROOT,
         invalid_json_retries=1,
     )
+    setup_run_logging(tmp_path / "run.log")
 
     with pytest.raises(JudgeResponseFormatExhaustedError, match="did not match schema"):
         judge_client.judge(
@@ -354,11 +356,13 @@ def test_openai_judge_logs_prompt_and_response_on_failure(monkeypatch, capsys):
             question_text="Describe the events.",
             reference_payload={"reference_segments": [{"text": "A score."}]},
             prediction_payload={"prediction_segments": [{"text": "A score."}]},
+            sample_id="video/events#1",
         )
 
     captured = capsys.readouterr()
-    assert "[Judge Debug] failure detected" in captured.err
-    assert "task_name=Continuous_Events_Caption" in captured.err
+    assert "event=judge_failure" in captured.err
+    assert 'sample_id="video/events#1"' in captured.err
+    assert 'task_name="Continuous_Events_Caption"' in captured.err
     assert "did not match schema after 2 attempt(s)" in captured.err
     assert "Describe the events." in captured.err
     assert '{"still_wrong": 2}' in captured.err

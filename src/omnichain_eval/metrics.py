@@ -223,6 +223,7 @@ def _judge_textual_task(
         prepared_sample.question_text,
         reference_payload,
         prediction_payload,
+        sample_id=prepared_sample.sample_id,
     )
     if task_name in {
         TASK_SCOREBOARD_SINGLE,
