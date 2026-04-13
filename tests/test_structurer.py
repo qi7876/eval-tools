@@ -70,6 +70,21 @@ class StaticParseBackend(StructurerBackend):
         return [raw_output]
 
 
+def _stream_chunk(*, content, index: int = 0):
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                index=index,
+                delta=SimpleNamespace(content=content),
+            )
+        ]
+    )
+
+
+def _stream_completion(*parts: str):
+    return [_stream_chunk(content=part) for part in parts]
+
+
 def test_structurer_retries_invalid_json_before_accepting_valid_response():
     backend = SequenceBackend(
         [
@@ -567,13 +582,7 @@ def test_openai_structurer_forwards_extra_body(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs: object):
             captured.update(kwargs)
-            return SimpleNamespace(
-                choices=[
-                    SimpleNamespace(
-                        message=SimpleNamespace(content='{"text": "Team A is leading."}')
-                    )
-                ]
-            )
+            return _stream_completion('{"text": "Team A is leading."}')
 
     class FakeOpenAI:
         def __init__(self, **_: object) -> None:
@@ -599,10 +608,41 @@ def test_openai_structurer_forwards_extra_body(monkeypatch):
 
     assert responses == ['{"text": "Team A is leading."}']
     assert captured["temperature"] == 0.0
+    assert captured["stream"] is True
     assert captured["extra_body"] == {
         "enable_thinking": False,
         "provider_hint": "structurer",
     }
+
+
+def test_openai_structurer_aggregates_stream_chunks(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs: object):
+            del kwargs
+            return _stream_completion('{"text": ', '"Team A is leading."', "}")
+
+    class FakeOpenAI:
+        def __init__(self, **_: object) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr("omnichain_eval.structurer.OpenAI", FakeOpenAI)
+
+    backend = OpenAIStructurerBackend(
+        base_url="http://structurer.example/v1",
+        api_key="dummy",
+        temperature=0,
+    )
+    responses = backend.complete(
+        sample=_sample(),
+        raw_output='{"text": "Team A is leading."}',
+        rendered_prompt=render_structurer_prompt(
+            _prompt_pack(),
+            _sample(),
+            '{"text": "Team A is leading."}',
+        ),
+    )
+
+    assert responses == ['{"text": "Team A is leading."}']
 
 
 def test_prompt_sources_do_not_use_incomplete_empty_array_schemas():

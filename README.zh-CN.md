@@ -799,6 +799,7 @@ enable_thinking = false
 `[structurer].extra_body` 会被原样透传到 OpenAI-compatible 请求体里。
 `[structurer].temperature` 是可配置的；默认值是 `0`。
 如果你不手动覆盖，框架默认会使用 `model = "qwen3.5-397b-a17b"`、`temperature = 0` 和 `extra_body.enable_thinking = false`。
+框架现在会对 OpenAI-compatible structurer 请求默认启用流式拉取，并在内部聚合完整文本后再做 JSON 解析，以避免某些 provider 在非流式场景下阻塞返回。
 
 如果只是本地 smoke test，也可以不调用外部 structurer API，直接使用：
 
@@ -854,6 +855,7 @@ enable_thinking = false
 `[judge].extra_body` 也会原样进入请求体。
 `[judge].temperature` 是可配置的；默认值是 `0`。
 如果你不手动覆盖，框架默认会使用 `model = "qwen3.5-397b-a17b"`、`temperature = 0` 和 `extra_body.enable_thinking = false`。
+框架也会对 OpenAI-compatible judge 请求默认启用流式拉取，并在内部聚合完整文本后再做响应校验。
 
 然后只在环境变量里提供密钥：
 

@@ -17,6 +17,7 @@ from .constants import (
     JUDGE_REQUIRED_TASKS,
 )
 from .logging_utils import get_logger, log_event
+from .openai_stream import collect_chat_completion_stream_texts
 from .schema import JudgeDecision
 from .template_pack import (
     TaskTemplate,
@@ -252,21 +253,6 @@ class OpenAIJudgeClient(JudgeClient):
         payload = self._extract_payload(raw_response)
         return self._parse_decision_from_payload(raw_response, payload)
 
-    def _response_texts(self, completion: Any) -> list[str]:
-        responses: list[str] = []
-        for choice in getattr(completion, "choices", []):
-            message = choice.message.content
-            if isinstance(message, list):
-                responses.append(
-                    "".join(
-                        item.get("text", "") if isinstance(item, dict) else str(item)
-                        for item in message
-                    )
-                )
-            else:
-                responses.append(message or "")
-        return responses or [""]
-
     def _emit_failure_debug_log(
         self,
         *,
@@ -307,11 +293,14 @@ class OpenAIJudgeClient(JudgeClient):
         last_error_reason = "judge response format was invalid"
         for attempt_index in range(max_attempts):
             try:
-                completion = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt_text}],
-                    temperature=self.temperature,
-                    extra_body=self.extra_body or None,
+                responses = collect_chat_completion_stream_texts(
+                    self.client.chat.completions.create(
+                        model=self.model,
+                        messages=[{"role": "user", "content": prompt_text}],
+                        temperature=self.temperature,
+                        extra_body=self.extra_body or None,
+                        stream=True,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001
                 self._emit_failure_debug_log(
@@ -322,7 +311,7 @@ class OpenAIJudgeClient(JudgeClient):
                     reason=f"{type(exc).__name__}: {exc}",
                 )
                 raise
-            for raw_response in self._response_texts(completion):
+            for raw_response in responses:
                 last_raw_response = raw_response
                 try:
                     decision = self._parse_decision(raw_response)

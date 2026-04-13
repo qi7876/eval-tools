@@ -769,6 +769,7 @@ enable_thinking = false
 `[structurer].extra_body` is passed through directly to the OpenAI-compatible request body.
 `[structurer].temperature` is configurable; the default is `0`.
 If you do not override them, the framework defaults to `model = "qwen3.5-397b-a17b"`, `temperature = 0`, and `extra_body.enable_thinking = false`.
+OpenAI-compatible structurer requests are sent with streaming enabled and aggregated inside the framework before JSON parsing, which avoids some providers blocking on non-streaming responses.
 
 For local smoke tests you can skip the external structurer API and use:
 
@@ -824,6 +825,7 @@ enable_thinking = false
 `[judge].extra_body` is also forwarded unchanged into the request body.
 `[judge].temperature` is configurable; the default is `0`.
 If you do not override them, the framework defaults to `model = "qwen3.5-397b-a17b"`, `temperature = 0`, and `extra_body.enable_thinking = false`.
+OpenAI-compatible judge requests are also sent with streaming enabled and aggregated inside the framework before response validation.
 
 Then export only the secret:
 

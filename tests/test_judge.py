@@ -18,12 +18,19 @@ from omnichain_eval.logging_utils import setup_run_logging
 JUDGE_PROMPT_ROOT = Path(__file__).resolve().parent.parent / "prompts" / "judge_v1"
 
 
-def _completion(*responses: str):
+def _stream_chunk(*, content, index: int = 0):
     return SimpleNamespace(
         choices=[
-            SimpleNamespace(message=SimpleNamespace(content=response)) for response in responses
+            SimpleNamespace(
+                index=index,
+                delta=SimpleNamespace(content=content),
+            )
         ]
     )
+
+
+def _stream_completion(*parts: str):
+    return [_stream_chunk(content=part) for part in parts]
 
 
 def test_load_judge_prompt_pack_requires_all_judge_task_templates(tmp_path):
@@ -177,8 +184,8 @@ def test_render_judge_prompt_for_temporal_causal_uses_result_reasoning_wording()
 
 def test_openai_judge_retries_invalid_json_before_accepting_valid_response(monkeypatch):
     responses = [
-        _completion("not-json"),
-        _completion(
+        _stream_completion("not-json"),
+        _stream_completion(
             json.dumps(
                 {
                     "correctness": 1,
@@ -230,8 +237,8 @@ def test_openai_judge_retries_invalid_json_before_accepting_valid_response(monke
 
 def test_openai_judge_retries_schema_errors(monkeypatch):
     responses = [
-        _completion(json.dumps({"final_pass": 1, "brief_reason": "missing keys"})),
-        _completion(
+        _stream_completion(json.dumps({"final_pass": 1, "brief_reason": "missing keys"})),
+        _stream_completion(
             json.dumps(
                 {
                     "correctness": 1,
@@ -282,8 +289,8 @@ def test_openai_judge_retries_schema_errors(monkeypatch):
 
 def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
     responses = [
-        _completion(json.dumps({"wrong_key": 1})),
-        _completion(json.dumps({"still_wrong": 2})),
+        _stream_completion(json.dumps({"wrong_key": 1})),
+        _stream_completion(json.dumps({"still_wrong": 2})),
     ]
     created: dict[str, object] = {}
 
@@ -323,8 +330,8 @@ def test_openai_judge_raises_after_exhausting_format_retries(monkeypatch):
 
 def test_openai_judge_logs_prompt_and_response_on_failure(monkeypatch, tmp_path, capsys):
     responses = [
-        _completion(json.dumps({"wrong_key": 1})),
-        _completion(json.dumps({"still_wrong": 2})),
+        _stream_completion(json.dumps({"wrong_key": 1})),
+        _stream_completion(json.dumps({"still_wrong": 2})),
     ]
 
     class FakeCompletions:
@@ -374,7 +381,7 @@ def test_openai_judge_forwards_extra_body(monkeypatch):
     class FakeCompletions:
         def create(self, **kwargs: object):
             captured.update(kwargs)
-            return _completion(
+            return _stream_completion(
                 json.dumps(
                     {
                         "correctness": 1,
@@ -410,7 +417,43 @@ def test_openai_judge_forwards_extra_body(monkeypatch):
 
     assert decision.final_pass == 1
     assert captured["temperature"] == 0.0
+    assert captured["stream"] is True
     assert captured["extra_body"] == {
         "enable_thinking": False,
         "provider_hint": "judge",
     }
+
+
+def test_openai_judge_aggregates_stream_chunks(monkeypatch):
+    class FakeCompletions:
+        def create(self, **kwargs: object):
+            del kwargs
+            return _stream_completion(
+                '{"correctness": 1, ',
+                '"completeness": 1, ',
+                '"faithfulness": 1, ',
+                '"final_pass": 1, ',
+                '"confidence": "high", ',
+                '"brief_reason": "Looks good."}',
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **_: object) -> None:
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    monkeypatch.setattr("omnichain_eval.judge.OpenAI", FakeOpenAI)
+
+    judge_client = OpenAIJudgeClient(
+        base_url="http://judge.example/v1",
+        api_key="dummy",
+        prompt_root=JUDGE_PROMPT_ROOT,
+    )
+
+    decision = judge_client.judge(
+        task_name="Continuous_Events_Caption",
+        question_text="Describe the events.",
+        reference_payload={"reference_segments": [{"text": "A score."}]},
+        prediction_payload={"prediction_segments": [{"text": "A score."}]},
+    )
+
+    assert decision.final_pass == 1

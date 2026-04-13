@@ -18,6 +18,7 @@ from .constants import (
 )
 from .logging_utils import get_logger, log_event
 from .normalize import validate_structured_prediction
+from .openai_stream import collect_chat_completion_stream_texts
 from .schema import PreparedSample, StructuredPredictionResult
 from .template_pack import TaskTemplate, TemplatePackError, load_task_template_pack, render_template_text
 from .utils import extract_json_object
@@ -107,21 +108,6 @@ class OpenAIStructurerBackend(StructurerBackend):
             **dict(extra_body or {}),
         }
 
-    def _response_texts(self, completion: Any) -> list[str]:
-        responses: list[str] = []
-        for choice in getattr(completion, "choices", []):
-            message = choice.message.content
-            if isinstance(message, list):
-                responses.append(
-                    "".join(
-                        item.get("text", "") if isinstance(item, dict) else str(item)
-                        for item in message
-                    )
-                )
-            else:
-                responses.append(message or "")
-        return responses or [""]
-
     def complete(
         self,
         *,
@@ -136,8 +122,9 @@ class OpenAIStructurerBackend(StructurerBackend):
             ],
             temperature=self.temperature,
             extra_body=self.extra_body or None,
+            stream=True,
         )
-        return self._response_texts(completion)
+        return collect_chat_completion_stream_texts(completion)
 
 
 def load_structurer_prompt_pack(prompt_root) -> dict[str, StructurerPromptTemplate]:
