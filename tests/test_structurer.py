@@ -200,6 +200,7 @@ def test_rendered_structurer_prompt_for_actions_includes_tracking_rules():
 
     assert "normalize explicit interval expressions" in rendered.prompt_text
     assert "normalize explicit tracking rows or coordinate strings" in rendered.prompt_text
+    assert "bbox_mot = [-1, -1, -1, -1]" in rendered.prompt_text
     assert "`bbox_mot` must be formatted as normalized_1000 `[left, top, width, height]`." in rendered.prompt_text
     assert "(1000, 1000)" in rendered.prompt_text
     assert "Question:" not in rendered.prompt_text
@@ -236,6 +237,7 @@ def test_rendered_structurer_prompt_for_stg_includes_full_tracking_schema():
     assert '\"time_window_sampled\": [0, 4]' in rendered.prompt_text
     assert '\"frame_sampled\": 0' in rendered.prompt_text
     assert '\"bbox_mot\": [0, 0, 100, 100]' in rendered.prompt_text
+    assert "bbox_mot = [-1, -1, -1, -1]" in rendered.prompt_text
     assert "`time_window_sampled` must be either an empty list or a two-value list `[start_sampled, end_sampled]`." in rendered.prompt_text
     assert "Each tracking row must contain `frame_sampled` and `bbox_mot`." in rendered.prompt_text
 

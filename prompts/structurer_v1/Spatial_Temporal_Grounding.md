@@ -12,6 +12,7 @@ Extraction rules:
 - Do not infer a time window or boxes that are not explicitly given.
 - `time_window_sampled` must be either an empty list or a two-value list `[start_sampled, end_sampled]`.
 - Each tracking row must contain `frame_sampled` and `bbox_mot`.
+- If a tracking row's frame index is explicit but its bbox is not explicitly given as valid coordinates in the raw model output, output `bbox_mot = [-1, -1, -1, -1]`.
 - `bbox_mot` must be formatted as normalized_1000 `[left, top, width, height]`.
 - In this coordinate system, `(0, 0)` is the top-left corner and `(1000, 1000)` is the bottom-right corner.
 
