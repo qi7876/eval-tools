@@ -682,7 +682,15 @@ def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path)
     assert "oracle_language_visual" in experiment_b
     assert "chain_success" in experiment_b["base"]
     assert "chain_success_wo_track" in experiment_b["base"]
+    assert "understanding_acc" in experiment_b["base"]
+    assert "understanding_acc_by_task" in experiment_b["base"]
+    assert "understanding_acc_wo_track" in experiment_b["base"]
+    assert "understanding_acc_wo_track_by_task" in experiment_b["base"]
     assert "chain_success_wo_track" in experiment_b["oracle_language"]
+    assert "understanding_acc" not in experiment_b["oracle_language"]
+    assert "understanding_acc_by_task" not in experiment_b["oracle_language"]
+    assert "understanding_acc_wo_track" in experiment_b["oracle_language"]
+    assert "understanding_acc_wo_track_by_task" in experiment_b["oracle_language"]
     assert "chain_success" not in experiment_b["oracle_language"]
     run_log = (run_dir / "run.log").read_text(encoding="utf-8")
     assert "event=run_init" in run_log

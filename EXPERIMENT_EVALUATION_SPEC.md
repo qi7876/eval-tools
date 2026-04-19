@@ -1141,15 +1141,38 @@ For chain evaluation, store:
 
 ```json
 {
-  "model_name": "...",
-  "num_chain_samples": 0,
-  "understanding_acc": 0.0,
-  "reasoning_acc": 0.0,
-  "chain_success": 0.0,
-  "chain_success_wo_track": 0.0,
-  "understanding_acc_oracle": 0.0,
-  "reasoning_acc_oracle": 0.0,
-  "chain_success_wo_track_oracle": 0.0
+  "experiment_b": {
+    "base": {
+      "num_chain_samples": 0,
+      "num_scored_chain_samples": 0,
+      "num_pending_chain_samples": 0,
+      "understanding_acc": 0.0,
+      "understanding_acc_by_task": {
+        "Continuous_Actions_Caption": 0.0,
+        "Spatial_Temporal_Grounding": 0.0
+      },
+      "understanding_acc_wo_track": 0.0,
+      "understanding_acc_wo_track_by_task": {
+        "Continuous_Actions_Caption": 0.0,
+        "Spatial_Temporal_Grounding": 0.0
+      },
+      "reasoning_acc": 0.0,
+      "chain_success": 0.0,
+      "chain_success_wo_track": 0.0
+    },
+    "oracle_language": {
+      "num_chain_samples": 0,
+      "num_scored_chain_samples": 0,
+      "num_pending_chain_samples": 0,
+      "understanding_acc_wo_track": 0.0,
+      "understanding_acc_wo_track_by_task": {
+        "Continuous_Actions_Caption": 0.0,
+        "Spatial_Temporal_Grounding": 0.0
+      },
+      "reasoning_acc": 0.0,
+      "chain_success_wo_track": 0.0
+    }
+  }
 }
 ```
 

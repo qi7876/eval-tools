@@ -994,7 +994,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 当前 `experiment_b` 会按分组输出：
 
-- `base`：understanding accuracy、reasoning accuracy、chain success、chain success (w/o track)
+- `base`：包含 tracking 的 understanding accuracy、仅 base 提供的按上游任务拆分 understanding accuracy、不含 tracking 的 understanding accuracy、reasoning accuracy、chain success、chain success (w/o track)
 - `oracle_language`：只做语言 GT tracking 注入的 text-only Oracle rerun
 - `oracle_visual`：只做视觉 GT tracking 注入的 text-only Oracle rerun
 - `oracle_language_visual`：同时做语言和视觉注入的 text-only Oracle rerun
@@ -1004,7 +1004,8 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 - `num_chain_samples`
 - `num_scored_chain_samples`
 - `num_pending_chain_samples`
-- `understanding_acc`
+- `understanding_acc_wo_track`
+- `understanding_acc_wo_track_by_task`
 - `reasoning_acc`
 - `chain_success_wo_track`
 

@@ -527,6 +527,13 @@ def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
             upstream_sample_id="up#1",
             downstream_sample_id="down#1",
             upstream_task_name="Continuous_Actions_Caption",
+        ),
+        ChainPairRecord(
+            pair_id="down#2|up#2",
+            video_key="TestSport/TestEvent/1",
+            upstream_sample_id="up#2",
+            downstream_sample_id="down#2",
+            upstream_task_name="Spatial_Temporal_Grounding",
         )
     ]
     records_by_sample_id = {
@@ -539,6 +546,16 @@ def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
             "down#1",
             "Spatial_Imagination",
             component_pass={"judge_pass": 1},
+        ),
+        "up#2": _evaluation_record(
+            "up#2",
+            "Spatial_Temporal_Grounding",
+            component_pass={"tracking_pass": 1, "tiou_pass": 1},
+        ),
+        "down#2": _evaluation_record(
+            "down#2",
+            "Spatial_Imagination",
+            component_pass={"judge_pass": 0},
         ),
     }
     oracle_variant_pair_results = {
@@ -554,7 +571,19 @@ def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
                     "Spatial_Imagination",
                     component_pass={"judge_pass": 1},
                 ),
-            }
+            },
+            "down#2|up#2": {
+                "upstream": _evaluation_record(
+                    "up#2",
+                    "Spatial_Temporal_Grounding",
+                    component_pass={"tracking_pass": 1, "tiou_pass": 0},
+                ),
+                "downstream": _evaluation_record(
+                    "down#2",
+                    "Spatial_Imagination",
+                    component_pass={"judge_pass": 1},
+                ),
+            },
         }
     }
 
@@ -564,15 +593,30 @@ def test_summarize_experiment_b_tracks_wo_track_metrics_and_oracle_names():
         oracle_variant_pair_results=oracle_variant_pair_results,
     )
 
-    assert chain_summary["base"]["understanding_acc"] == 0.0
-    assert chain_summary["base"]["reasoning_acc"] == 1.0
+    assert chain_summary["base"]["understanding_acc"] == 0.5
+    assert chain_summary["base"]["understanding_acc_by_task"] == {
+        "Continuous_Actions_Caption": 0.0,
+        "Spatial_Temporal_Grounding": 1.0,
+    }
+    assert chain_summary["base"]["understanding_acc_wo_track"] == 1.0
+    assert chain_summary["base"]["understanding_acc_wo_track_by_task"] == {
+        "Continuous_Actions_Caption": 1.0,
+        "Spatial_Temporal_Grounding": 1.0,
+    }
+    assert chain_summary["base"]["reasoning_acc"] == 0.5
     assert chain_summary["base"]["chain_success"] == 0.0
-    assert chain_summary["base"]["chain_success_wo_track"] == 1.0
-    assert chain_summary["oracle_language"]["understanding_acc"] == 1.0
+    assert chain_summary["base"]["chain_success_wo_track"] == 0.5
+    assert "understanding_acc" not in chain_summary["oracle_language"]
+    assert "understanding_acc_by_task" not in chain_summary["oracle_language"]
+    assert chain_summary["oracle_language"]["understanding_acc_wo_track"] == 0.5
+    assert chain_summary["oracle_language"]["understanding_acc_wo_track_by_task"] == {
+        "Continuous_Actions_Caption": 1.0,
+        "Spatial_Temporal_Grounding": 0.0,
+    }
     assert chain_summary["oracle_language"]["reasoning_acc"] == 1.0
-    assert chain_summary["oracle_language"]["chain_success_wo_track"] == 1.0
-    assert chain_summary["oracle_visual"]["num_pending_chain_samples"] == 1
-    assert chain_summary["oracle_language_visual"]["num_pending_chain_samples"] == 1
+    assert chain_summary["oracle_language"]["chain_success_wo_track"] == 0.5
+    assert chain_summary["oracle_visual"]["num_pending_chain_samples"] == 2
+    assert chain_summary["oracle_language_visual"]["num_pending_chain_samples"] == 2
 
 
 def test_unsupported_tasks_are_ignored_in_validation_prepare_and_chain(monkeypatch, tmp_path):

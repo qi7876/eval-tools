@@ -18,6 +18,7 @@ from .constants import (
     ORACLE_VARIANT_LANGUAGE_VISUAL,
     ORACLE_VARIANT_VISUAL,
     TASK_CONTINUOUS_ACTIONS,
+    TASK_STG,
 )
 from .dataset import DatasetScanReport, scan_dataset_report
 from .judge import JudgeClient
@@ -47,6 +48,9 @@ class OraclePairError(RuntimeError):
         self.pair_id = pair_id
         self.stage = stage
         self.cause = cause
+
+
+_EXPERIMENT_B_UPSTREAM_TASKS = (TASK_CONTINUOUS_ACTIONS, TASK_STG)
 
 
 def build_chain_manifest(
@@ -502,11 +506,25 @@ def _oracle_input_sample_for_variant(sample: PreparedSample, *, variant: str) ->
     raise ValueError(f"unsupported Oracle variant: {variant}")
 
 
+def _mean(values: list[int]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _experiment_b_by_task(values_by_task: dict[str, list[int]]) -> dict[str, float | None]:
+    return {
+        task_name: _mean(values_by_task.get(task_name, []))
+        for task_name in _EXPERIMENT_B_UPSTREAM_TASKS
+    }
+
+
 def _summarize_base_chain_pairs(
     chain_pairs: list[ChainPairRecord],
     records_by_sample_id: dict[str, EvaluationRecord],
 ) -> dict[str, Any]:
     understanding_values: list[int] = []
+    understanding_values_by_task: dict[str, list[int]] = defaultdict(list)
+    understanding_wo_track_values: list[int] = []
+    understanding_wo_track_values_by_task: dict[str, list[int]] = defaultdict(list)
     reasoning_values: list[int] = []
     chain_values: list[int] = []
     chain_wo_track_values: list[int] = []
@@ -526,6 +544,11 @@ def _summarize_base_chain_pairs(
         reasoning_pass = int(downstream.component_pass.get("judge_pass", 0))
         understanding_pass = tracking_pass * understanding_non_tracking
         understanding_values.append(understanding_pass)
+        understanding_values_by_task[pair.upstream_task_name].append(understanding_pass)
+        understanding_wo_track_values.append(understanding_non_tracking)
+        understanding_wo_track_values_by_task[pair.upstream_task_name].append(
+            understanding_non_tracking
+        )
         reasoning_values.append(reasoning_pass)
         chain_values.append(understanding_pass * reasoning_pass)
         chain_wo_track_values.append(understanding_non_tracking * reasoning_pass)
@@ -535,14 +558,15 @@ def _summarize_base_chain_pairs(
         "num_chain_samples": len(chain_pairs),
         "num_scored_chain_samples": num_scored_pairs,
         "num_pending_chain_samples": pending_pairs,
-        "understanding_acc": (
-            sum(understanding_values) / num_scored_pairs if num_scored_pairs else None
+        "understanding_acc": _mean(understanding_values),
+        "understanding_acc_by_task": _experiment_b_by_task(understanding_values_by_task),
+        "understanding_acc_wo_track": _mean(understanding_wo_track_values),
+        "understanding_acc_wo_track_by_task": _experiment_b_by_task(
+            understanding_wo_track_values_by_task
         ),
-        "reasoning_acc": sum(reasoning_values) / num_scored_pairs if num_scored_pairs else None,
-        "chain_success": sum(chain_values) / num_scored_pairs if num_scored_pairs else None,
-        "chain_success_wo_track": (
-            sum(chain_wo_track_values) / num_scored_pairs if num_scored_pairs else None
-        ),
+        "reasoning_acc": _mean(reasoning_values),
+        "chain_success": _mean(chain_values),
+        "chain_success_wo_track": _mean(chain_wo_track_values),
     }
 
 
@@ -550,7 +574,8 @@ def _summarize_oracle_variant_chain_pairs(
     chain_pairs: list[ChainPairRecord],
     pair_results: dict[str, dict[str, EvaluationRecord]],
 ) -> dict[str, Any]:
-    understanding_values: list[int] = []
+    understanding_wo_track_values: list[int] = []
+    understanding_wo_track_values_by_task: dict[str, list[int]] = defaultdict(list)
     reasoning_values: list[int] = []
     chain_wo_track_values: list[int] = []
     pending_pairs = 0
@@ -571,24 +596,26 @@ def _summarize_oracle_variant_chain_pairs(
                 oracle_upstream.component_pass.get("tiou_pass", 0)
             )
         oracle_reasoning_pass = int(oracle_downstream.component_pass.get("judge_pass", 0))
-        understanding_values.append(oracle_understanding_non_tracking)
+        understanding_wo_track_values.append(oracle_understanding_non_tracking)
+        understanding_wo_track_values_by_task[pair.upstream_task_name].append(
+            oracle_understanding_non_tracking
+        )
         reasoning_values.append(oracle_reasoning_pass)
         chain_wo_track_values.append(
             oracle_understanding_non_tracking * oracle_reasoning_pass
         )
 
-    num_scored_pairs = len(understanding_values)
+    num_scored_pairs = len(understanding_wo_track_values)
     return {
         "num_chain_samples": len(chain_pairs),
         "num_scored_chain_samples": num_scored_pairs,
         "num_pending_chain_samples": pending_pairs,
-        "understanding_acc": (
-            sum(understanding_values) / num_scored_pairs if num_scored_pairs else None
+        "understanding_acc_wo_track": _mean(understanding_wo_track_values),
+        "understanding_acc_wo_track_by_task": _experiment_b_by_task(
+            understanding_wo_track_values_by_task
         ),
-        "reasoning_acc": sum(reasoning_values) / num_scored_pairs if num_scored_pairs else None,
-        "chain_success_wo_track": (
-            sum(chain_wo_track_values) / num_scored_pairs if num_scored_pairs else None
-        ),
+        "reasoning_acc": _mean(reasoning_values),
+        "chain_success_wo_track": _mean(chain_wo_track_values),
     }
 
 

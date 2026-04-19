@@ -963,7 +963,7 @@ chain_manifest = "artifacts/chain_pairs.jsonl"
 
 The current runner writes `experiment_b` as grouped summaries:
 
-- `base`: understanding accuracy, reasoning accuracy, chain success, chain success (w/o track)
+- `base`: tracking-inclusive understanding accuracy, base-only understanding accuracy by upstream task, understanding accuracy without tracking, reasoning accuracy, chain success, chain success (w/o track)
 - `oracle_language`: text-only Oracle rerun with language GT tracking injection
 - `oracle_visual`: text-only Oracle rerun with visual GT tracking injection
 - `oracle_language_visual`: text-only Oracle rerun with both injections
@@ -973,7 +973,8 @@ Each Oracle group reports:
 - `num_chain_samples`
 - `num_scored_chain_samples`
 - `num_pending_chain_samples`
-- `understanding_acc`
+- `understanding_acc_wo_track`
+- `understanding_acc_wo_track_by_task`
 - `reasoning_acc`
 - `chain_success_wo_track`
 
