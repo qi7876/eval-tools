@@ -7,7 +7,6 @@ import logging
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from math import ceil
 from pathlib import Path
 from typing import Any
 
@@ -104,13 +103,7 @@ class StageProgressLogger:
     logger: Any
     event_name: str
     total_samples: int
-    checkpoint_units: int = 0
-    next_checkpoint_units: int = 0
-
-    def __post_init__(self) -> None:
-        checkpoint_samples = 1 if self.total_samples < 20 else max(1, ceil(self.total_samples * 0.05))
-        self.checkpoint_units = checkpoint_samples * 3
-        self.next_checkpoint_units = self.checkpoint_units
+    last_snapshot: StageProgressSnapshot | None = None
 
     def log_start(self, **fields: Any) -> None:
         log_event(self.logger, logging.INFO, f"{self.event_name}_start", **fields)
@@ -122,10 +115,9 @@ class StageProgressLogger:
         force: bool = False,
         event_suffix: str = "progress",
     ) -> None:
-        if not force and snapshot.completed_units < self.next_checkpoint_units:
+        if not force and snapshot == self.last_snapshot:
             return
-        while snapshot.completed_units >= self.next_checkpoint_units:
-            self.next_checkpoint_units += self.checkpoint_units
+        self.last_snapshot = snapshot
         log_event(
             self.logger,
             logging.INFO,
@@ -148,12 +140,7 @@ class OracleVariantProgressLogger:
     logger: Any
     variant: str
     total_pairs: int
-    checkpoint: int = 0
-    next_checkpoint: int = 0
-
-    def __post_init__(self) -> None:
-        self.checkpoint = 1 if self.total_pairs < 20 else max(1, ceil(self.total_pairs * 0.05))
-        self.next_checkpoint = self.checkpoint
+    last_counts: tuple[int, int] | None = None
 
     def log_start(self, *, completed_pairs: int, failed_pairs: int) -> None:
         log_event(
@@ -168,10 +155,10 @@ class OracleVariantProgressLogger:
 
     def log_progress(self, *, completed_pairs: int, failed_pairs: int, force: bool = False) -> None:
         processed_pairs = completed_pairs + failed_pairs
-        if not force and processed_pairs < self.next_checkpoint:
+        counts = (completed_pairs, failed_pairs)
+        if not force and counts == self.last_counts:
             return
-        while processed_pairs >= self.next_checkpoint:
-            self.next_checkpoint += self.checkpoint
+        self.last_counts = counts
         log_event(
             self.logger,
             logging.INFO,

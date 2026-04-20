@@ -709,6 +709,11 @@ def test_run_eval_oracle_track_reruns_and_resumes_by_pair(monkeypatch, tmp_path)
     assert 'prediction="1/1"' in run_log
     assert 'structured="1/1"' in run_log
     assert 'judged="1/1"' in run_log
+    assert run_log.count("event=normal_stage_progress") >= 3
+    assert run_log.count("event=chain_stage_progress") >= 3
+    assert run_log.count('event=oracle_variant_progress variant="language"') >= 1
+    assert run_log.count('event=oracle_variant_progress variant="visual"') >= 1
+    assert run_log.count('event=oracle_variant_progress variant="language_visual"') >= 1
 
     adapter.calls.clear()
     for sample_id in adapter.inputs:
